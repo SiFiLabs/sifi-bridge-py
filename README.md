@@ -20,4 +20,4 @@ Examples are available in the `examples/` directory of this project.
 
 ## Versioning
 
-The wrapper is updated for every SiFi Bridge version and its versioning scheme follows consequently.
+The wrapper is updated for every SiFi Bridge version. Major and minor versions will always be kept in sync, while the patch version will vary for language-specific bug fixes.
