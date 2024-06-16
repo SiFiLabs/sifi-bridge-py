@@ -39,7 +39,7 @@ class Commands(IntEnum):
     STOP_STATUS_UPDATE = 21
 
 
-class DeviceName(Enum):
+class DeviceType(Enum):
     """
     Use in tandem with SifiBridge.connect() to connect to SiFi Devices via BLE name.
     """
@@ -150,25 +150,26 @@ class SifiBridge:
         sb_devs = self.get_data_with_key("found_devices")
         return sb_devs
 
-    def connect(self, handle: DeviceName | str) -> bool:
+    def connect(self, handle: DeviceType | str) -> bool:
         """
         Try to connect to `handle`.
 
-        :param handle: Device handle to connect to. `DeviceNames` variant
+        :param handle: Device handle to connect to. If a string, will attempt to connect to the BLE device with that name. If a DeviceType, will attempt to connect to the BLE device as-is.
 
-        Sets `self.devices[self.active_device].connected` to the connection status and returns True if connection successful, False otherwise.
+        :return: True if connection successful, False otherwise.
         """
 
-        conn_handle = handle.value
+        if isinstance(handle, DeviceType):
+            handle = handle.value
 
-        self.__write(f"-c {conn_handle}")
+        self.__write(f"-c {handle}")
         ret = self.get_data_with_key("connected")
         self.devices[self.active_device].connected = ret["connected"]
         if ret["connected"] is True:
-            self.devices[self.active_device].name = conn_handle
+            self.devices[self.active_device].name = handle
             return True
         else:
-            logging.info(f"Could not connect to {conn_handle}")
+            logging.info(f"Could not connect to {handle}")
         return False
 
     def disconnect(self):

@@ -1,11 +1,11 @@
-from sifi_bridge_py import SifiBridge, DeviceName
+from sifi_bridge_py import SifiBridge, DeviceType
 import logging
 
 import matplotlib.pyplot as plt
 
 
 def main():
-    device_type = DeviceName.BIOARMBAND
+    device_type = DeviceType.BIOARMBAND
 
     logging.basicConfig(level=logging.INFO)
 
@@ -18,10 +18,10 @@ def main():
 
     emg_data = (
         {f"emg{i}": [] for i in range(8)}
-        if device_type == DeviceName.BIOARMBAND
+        if device_type == DeviceType.BIOARMBAND
         else {"emg": []}
     )
-    base_key = "emg0" if device_type == DeviceName.BIOARMBAND else "emg"
+    base_key = "emg0" if device_type == DeviceType.BIOARMBAND else "emg"
 
     while len(emg_data[base_key]) < 10000:
         new_data = sb.get_emg()
@@ -31,7 +31,7 @@ def main():
 
     time = [i / new_data["sample_rate"] for i in range(len(emg_data[base_key]))]
 
-    if device_type == DeviceName.BIOARMBAND:
+    if device_type == DeviceType.BIOARMBAND:
         legend = [f"Channel {i}" for i in range(8)]
         for i in range(8):
             plt.plot(time, emg_data[f"emg{i}"])

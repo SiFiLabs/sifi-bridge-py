@@ -1,1 +1,1 @@
-from .sifi_bridge import SifiBridge, Commands, DeviceName  # noqa
+from .sifi_bridge import SifiBridge, Commands, DeviceType  # noqa
