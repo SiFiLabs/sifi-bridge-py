@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import logging
 
 
-class SifiCommands(IntEnum):
+class Commands(IntEnum):
     """
     Use in tandem with SifiBridge.send_command() to control Sifi device operation.
     """
@@ -39,7 +39,7 @@ class SifiCommands(IntEnum):
     STOP_STATUS_UPDATE = 21
 
 
-class SifiDeviceNames(Enum):
+class DeviceName(Enum):
     """
     Use in tandem with SifiBridge.connect() to connect to SiFi Devices via BLE name.
     """
@@ -52,7 +52,7 @@ class SifiDeviceNames(Enum):
 
 
 @dataclass
-class SifiDevice:
+class Device:
     uid: str
     """
     User ID of the device. This ID is set by the user to easily identify each SiFi devices.
@@ -82,7 +82,7 @@ class SifiBridge:
     Currently active SiFi Bridge Device.
     """
 
-    devices: dict[SifiDevice]
+    devices: dict[Device]
     """
     SiFi Bridge devices. Used to keep track of state and cache some informations.
     """
@@ -102,7 +102,7 @@ class SifiBridge:
         # py_version = version("sifi_bridge_py")
         self.bridge = sp.Popen([exec_path], stdin=sp.PIPE, stdout=sp.PIPE)
         self.active_device = "default"
-        self.devices = {"default": SifiDevice("default", False, "None")}
+        self.devices = {self.active_device: Device(self.active_device, False, "None")}
 
     def create_device(self, uid: str, select: bool = True) -> bool:
         """
@@ -121,7 +121,7 @@ class SifiBridge:
         ret = False
         self.__write(f"-n {uid}")
         if uid in self.list_devices("devices")["found_devices"]:
-            self.devices[uid] = SifiDevice(uid, False, "None")
+            self.devices[uid] = Device(uid, False, "None")
             ret = True
         if select:
             self.select_device(uid)
@@ -147,15 +147,14 @@ class SifiBridge:
         :param source: "self" to list UID devices, "ble" to list BLE devices, "serial" for serial, and any other input will list the SiFi Bridge devices
         """
         self.__write(f"-l {source}")
-        sb_devs = self.get_data(None, "found_devices")
-        logging.info(sb_devs)
+        sb_devs = self.get_data_with_key("found_devices")
         return sb_devs
 
-    def connect(self, handle: SifiDeviceNames) -> bool:
+    def connect(self, handle: DeviceName | str) -> bool:
         """
-        Try to connect the currently selected UID to `conn_str`.
+        Try to connect to `handle`.
 
-        :param handle: Device handle to connect to.
+        :param handle: Device handle to connect to. `DeviceNames` variant
 
         Sets `self.devices[self.active_device].connected` to the connection status and returns True if connection successful, False otherwise.
         """
@@ -177,7 +176,7 @@ class SifiBridge:
         Disconnect from the active device.
         """
         self.__write("-d")
-        ret = self.get_data(self.active_device, "connected")
+        ret = self.get_data_with_key("connected")
         self.devices[self.active_device].connected = ret["connected"]
         return ret["connected"]
 
@@ -294,12 +293,12 @@ class SifiBridge:
             return -2
 
         if show_progress:
-            self.send_command(SifiCommands.START_STATUS_UPDATE)
+            self.send_command(Commands.START_STATUS_UPDATE)
             while True:
                 try:
-                    data = self.get_data_with_key(
-                        self.active_device, ["data", "memory_used_kb"]
-                    )
+                    data = self.get_data_with_key(["data", "memory_used_kb"])
+                    if data["id"] != self.active_device:
+                        continue
                     kb_to_download = data["data"]["memory_used_kb"]
                     break
                 except KeyError:
@@ -307,11 +306,11 @@ class SifiBridge:
 
             logging.info(f"KB to download: {kb_to_download}")
 
-        self.send_command(SifiCommands.DOWNLOAD_ONBOARD_MEMORY)
+        self.send_command(Commands.DOWNLOAD_ONBOARD_MEMORY)
 
         return kb_to_download
 
-    def send_command(self, command: SifiCommands):
+    def send_command(self, command: Commands):
         """
         Send a command to active device.
 
@@ -325,7 +324,7 @@ class SifiBridge:
 
         Returns the "Start Time" packet.
         """
-        self.send_command(SifiCommands.START_ACQUISITION)
+        self.send_command(Commands.START_ACQUISITION)
         while True:
             resp = self.get_data_with_key(["data", "year"])
             if resp["id"] != self.active_device:
@@ -338,7 +337,7 @@ class SifiBridge:
         """
         Stop current acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying SifiBridge instance.
         """
-        self.send_command(SifiCommands.STOP_ACQUISITION)
+        self.send_command(Commands.STOP_ACQUISITION)
 
     def get_data(self) -> dict:
         """
@@ -419,11 +418,6 @@ class SifiBridge:
 
     def __del__(self):
         try:
-            # Try graceful exit
-            self.disconnect()
             self.__write("-q")
         except Exception as e:
             logging.error(e)
-
-        # Safety check
-        self.bridge.kill()
