@@ -1,4 +1,8 @@
-# sifi-bridge-py
+# SiFi Bridge Python
+
+![License](https://img.shields.io/github/license/SiFiLabs/sifi-bridge-py)
+![PyPI - Version](https://img.shields.io/pypi/v/sifi_bridge_py)
+[![pdm-managed](https://img.shields.io/badge/pdm-managed-blueviolet)](https://pdm-project.org)
 
 ## Overview
 
