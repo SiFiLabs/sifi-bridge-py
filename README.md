@@ -1,6 +1,8 @@
-# sifi-bridge-py
+# SiFi Bridge Python
 
-## Overview
+![PyPI - Version](https://img.shields.io/pypi/v/sifi_bridge_py)
+![License](https://img.shields.io/github/license/SiFiLabs/sifi-bridge-py)
+[![pdm-managed](https://img.shields.io/badge/pdm-managed-blueviolet)](https://pdm-project.org)
 
 SiFi Bridge Python is a convenient wrapper over [SiFi Bridge CLI](https://github.com/SiFiLabs/sifi-bridge-pub).
 
