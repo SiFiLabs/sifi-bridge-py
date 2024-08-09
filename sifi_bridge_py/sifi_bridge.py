@@ -4,7 +4,7 @@ from importlib import metadata  # noqa
 import json
 from typing import Iterable
 
-from enum import IntEnum, Enum
+from enum import IntEnum, Enum, StrEnum
 from dataclasses import dataclass
 
 import logging
@@ -47,7 +47,7 @@ class DeviceType(Enum):
     BIOPOINT_V1_1 = "BioPoint_v1_1"
     BIOPOINT_V1_2 = "BioPoint_v1_2"
     BIOPOINT_V1_3 = "BioPoint_v1_3"
-    BIOARMBAND_LEGACY = "BioPoint_v1_1"
+    BIOPOINT_V1_4 = "BioPoint_v1_4"
     BIOARMBAND = "BioArmband"  # sb >=0.6.2
 
 
@@ -67,6 +67,17 @@ class Device:
     """
 
 
+class ListSources(StrEnum):
+    """
+    Use in tandem with SifiBridge.list_devices() to list devices from different sources.
+    """
+
+    PY = "self"
+    BLE = "ble"
+    SERIAL = "serial"
+    DEVICES = "devices"
+
+
 class SifiBridge:
     """
     Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on IO.
@@ -82,7 +93,7 @@ class SifiBridge:
     Currently active SiFi Bridge Device.
     """
 
-    devices: dict[Device]
+    devices: dict[str:Device]
     """
     SiFi Bridge devices. Used to keep track of state and cache some informations.
     """
@@ -102,9 +113,11 @@ class SifiBridge:
         # py_version = version("sifi_bridge_py")
         self.bridge = sp.Popen([exec_path], stdin=sp.PIPE, stdout=sp.PIPE)
         self.active_device = "default"
-        self.devices = {self.active_device: Device(self.active_device, False, "None")}
+        self.devices = {
+            self.active_device: Device(self.active_device, "device1", False)
+        }
 
-    def create_device(self, uid: str, select: bool = True) -> bool:
+    def create_device(self, name: str, select: bool = True) -> bool:
         """
         Create a SiFi Bridge device named `uid` and optionally select it.
 
@@ -115,16 +128,16 @@ class SifiBridge:
 
         Returns True if the device was created, False otherwise.
         """
-        if " " in uid:
-            raise ValueError(f"Spaces are not supported in UID: {uid}")
+        if " " in name:
+            raise ValueError(f"Spaces are not supported in device name ({name})")
 
         ret = False
-        self.__write(f"-n {uid}")
-        if uid in self.list_devices("devices")["found_devices"]:
-            self.devices[uid] = Device(uid, False, "None")
+        self.__write(f"create {name}")
+        if name in self.list_devices("devices")["found_devices"]:
+            self.devices[name] = Device(name, "device1", False)
             ret = True
         if select:
-            self.select_device(uid)
+            self.select_device(name)
 
         return ret
 
@@ -135,18 +148,18 @@ class SifiBridge:
         Returns True if device was selected, False if it does not exist.
         """
         if uid in self.list_devices("devices")["found_devices"]:
-            self.__write(f"-i {uid}")
+            self.__write(f"select {uid}")
             self.active_device = uid
             return True
         return False
 
-    def list_devices(self, source: str) -> dict:
+    def list_devices(self, source: ListSources) -> dict:
         """
         Returns all devices found from the passed `source`.
 
         :param source: "self" to list UID devices, "ble" to list BLE devices, "serial" for serial, and any other input will list the SiFi Bridge devices
         """
-        self.__write(f"-l {source}")
+        self.__write(f"list {source}")
         sb_devs = self.get_data_with_key("found_devices")
         return sb_devs
 
@@ -162,7 +175,7 @@ class SifiBridge:
         if isinstance(handle, DeviceType):
             handle = handle.value
 
-        self.__write(f"-c {handle}")
+        self.__write(f"connect {handle}")
         ret = self.get_data_with_key("connected")
         self.devices[self.active_device].connected = ret["connected"]
         if ret["connected"] is True:
@@ -176,7 +189,7 @@ class SifiBridge:
         """
         Disconnect from the active device.
         """
-        self.__write("-d")
+        self.__write("delete")
         ret = self.get_data_with_key("connected")
         self.devices[self.active_device].connected = ret["connected"]
         return ret["connected"]
@@ -185,7 +198,7 @@ class SifiBridge:
         """
         Set state of onboard filtering for all biochannels.
         """
-        self.__write(f"-s enable_filters {int(enable)}")
+        self.__write(f"configure enable-filtering {int(enable)}")
 
     def set_channels(
         self,
