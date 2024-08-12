@@ -2,6 +2,8 @@ import os
 import requests
 import shutil
 from platform import system
+from importlib import metadata
+
 from semantic_version import Version
 
 import numpy as np
@@ -9,12 +11,12 @@ import numpy as np
 import logging
 
 
-def pull_sifi_bridge(version: str, output_dir: str):
+def get_sifi_bridge(version: str, output_dir: str):
     """
-    Pull SiFi Bridge executable from the [official Github repository](https://github.com/SiFiLabs/sifi-bridge-pub).
+    Pull the SiFi Bridge CLI from the [official Github repository](https://github.com/SiFiLabs/sifi-bridge-pub).
 
     :param version: SiFi Bridge version triplet to pull. Use "latest" to pull the latest version.
-    :output_dir: Directory to save the executable to.
+    :param output_dir: Directory to save the executable to.
 
     :raises ValueError: If the version is not found or if `version` triplet is not valid.
 
@@ -97,3 +99,16 @@ def get_attitude_from_quats(qw, qx, qy, qz):
     pitch = np.arcsin(-2.0 * aasin)
     roll = np.arctan2(2.0 * (qx * qy + qw * qz), qw * qw + qx * qx - qy * qy - qz * qz)
     return pitch, yaw, roll
+
+
+def get_package_version():
+    """
+    Get the version of the sifi_bridge_py package.
+
+    The SiFi Bridge utilities follow semantic versioning.
+
+    Consequently, the CLI and the Python package should always have the same major and minor versions to ensure compatibility.
+
+    :return: Version string.
+    """
+    return metadata.version("sifi_bridge_py")
