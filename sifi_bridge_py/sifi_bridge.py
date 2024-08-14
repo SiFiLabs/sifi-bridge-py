@@ -429,7 +429,7 @@ class SifiBridge:
 
     def stop(self):
         """
-        Stop current acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying SifiBridge instance.
+        Stop current acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying Sifi Bridge instance.
 
         :return: True if command was sent successfully, False otherwise.
         """
