@@ -23,10 +23,10 @@ class DeviceCommand(Enum):
     ERASE_ONBOARD_MEMORY = "erase-memory"
     DOWNLOAD_ONBOARD_MEMORY = "download-memory"
     START_STATUS_UPDATE = "start-status-update"
-    OPEN_LED_1 = "open-led-1"
-    OPEN_LED_2 = "open-led-2"
-    CLOSE_LED_1 = "close-led-1"
-    CLOSE_LED_2 = "close-led-2"
+    OPEN_LED_1 = "open-led1"
+    OPEN_LED_2 = "open-led2"
+    CLOSE_LED_1 = "close-led1"
+    CLOSE_LED_2 = "close-led2"
     START_MOTOR = "start-motor"
     STOP_MOTOR = "stop-motor"
     POWER_OFF = "power-off"
@@ -89,31 +89,14 @@ class PpgSensitivity(Enum):
     MAX = "max"
 
 
-@dataclass
-class _Device:
-    uid: str
-    """
-    User ID of the device. This ID is set by the user to easily identify each SiFi devices.
-    """
-    name: str
-    """
-    BLE name of the device. This is set by the device itself and is used to connect to it.
-    """
-    connected: bool
-    """
-    Connection status of the device. True if connected, False otherwise.
-    """
-
-
 class ListSources(Enum):
     """
     Use in tandem with SifiBridge.list_devices() to list devices from different sources.
     """
 
-    PY = "self"
     BLE = "ble"
     SERIAL = "serial"
-    DEVICES = "devices"
+    CONTAINERS = "containers"
 
 
 class SifiBridge:
@@ -121,26 +104,20 @@ class SifiBridge:
     Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on IO.
     """
 
-    bridge: sp.Popen
+    _bridge: sp.Popen
     """
-    SiFi Bridge executable instance, you shouldn't have to manually interact with it.
+    SiFi Bridge executable instance.
     """
 
     active_device: str
-    """
-    Currently active SiFi Bridge Device.
-    """
 
-    devices: dict[str:_Device]
-    """
-    SiFi Bridge devices. Used to keep track of state and cache some informations.
-    """
-
-    def __init__(self, exec_path: str = "sifi_bridge"):
+    def __init__(self, exec_path: str = "sfb"):
         """
         Create a SiFi Bridge instance. Currently, only `stdin` and `stdout` are supported to communicate with Sifi Bridge.
 
-        :param exec_path: Path to sifi_bridge. If executable is in PATH, you can leave it at default value.
+        For more documentation about SiFi Bridge, see `sfb -h` or the interactive help: `sfb; help;̀
+
+        :param exec_path: Path to `sfb`. If it is in `PATH`, you can leave it at the default value.
         """
         cli_version = (
             sp.run([exec_path, "-V"], stdout=sp.PIPE)
@@ -156,11 +133,8 @@ class SifiBridge:
             "See sifi_bridge_py.utils.get_sifi_bridge() to fetch the corresponding version."
         )
 
-        self.bridge = sp.Popen([exec_path], stdin=sp.PIPE, stdout=sp.PIPE)
-        self.active_device = "default"
-        self.devices = {
-            self.active_device: _Device(self.active_device, "device-1", False)
-        }
+        self._bridge = sp.Popen([exec_path], stdin=sp.PIPE, stdout=sp.PIPE)
+        self.active_device = "device-1"
 
     def show(self):
         """
@@ -169,99 +143,93 @@ class SifiBridge:
         self.__write("show")
         return self.get_data_with_key("ble_power")
 
-    def create_device(self, name: str, select: bool = True) -> bool:
+    def create_container(self, name: str, select: bool = True):
         """
-        Create a SiFi Bridge device named `uid` and optionally select it.
+        Create a container and optionally select it.
 
-        :param uid: User-defined name of the device
-        :param select: Automatically select the device after creation
+        :param name: Container name
+        :param select: True to select the device after creation
 
         Raises a `ValueError` if `uid` contains spaces.
 
-        Returns True if the device was created, False otherwise.
+        :return: Response from Bridge
         """
         if " " in name:
             raise ValueError(f"Spaces are not supported in device name ({name})")
 
-        ret = False
-        self.__write(f"create {name}")
-        if name in self.list_devices("devices")["found_devices"]:
-            self.devices[name] = _Device(name, "device1", False)
-            ret = True
-        if select:
-            self.select_device(name)
+        old_active = self.active_device
+        self.__write(f"new {name}")
+        resp = self.get_data_with_key("active")
+        self.active_device = resp["active"]
+        if not select:
+            return self.select_container(old_active)
+        return resp
 
-        return ret
+    def select_container(self, name: str):
+        """
+        Select a container as active.
 
-    def select_device(self, uid: str) -> bool:
-        """
-        Select the SiFi Bridge device with user id `uid`.
+        :param name: Name of the container to select
 
-        Returns True if device was selected, False if it does not exist.
+        :return: Response from Bridge
         """
-        if uid in self.list_devices("devices")["found_devices"]:
-            self.__write(f"select {uid}")
-            self.active_device = uid
-            return True
-        return False
+        self.__write(f"select {name}")
+        resp = self.get_data_with_key("active")
+        self.active_device = resp["active"]
+        return resp
 
-    def delete_device(self):
+    def delete_container(self, name: str):
         """
-        Delete the active device.
+        Delete a container. Selects the next available container.
+
+        :param name: Name of the container to delete
         """
-        self.__write("delete")
-        if len(self.devices) > 0:
-            self.devices.pop(self.active_device)
-        else:
-            logging.warning("No devices to delete")
+        self.__write(f"delete {name}")
+        return self.get_data_with_key("active")
 
     def list_devices(self, source: ListSources) -> dict:
         """
-        Returns all devices found from the `source`.
-
-        :param source: "self" to list UID devices, "ble" to list BLE devices, "serial" for serial, and any other input will list the SiFi Bridge devices
+        List all devices found from a given `source`.
         """
         self.__write(f"list {source.value}")
-        sb_devs = self.get_data_with_key("found_devices")
-        return sb_devs
+        return self.get_data_with_key("found_devices")
 
     def connect(self, handle: DeviceType | str) -> bool:
         """
         Try to connect to `handle`.
 
-        :param handle: Device handle to connect to. Can be a `DeviceType` to connect by device name or a MAC string to connect to a specific device.
+        :param handle: Device handle to connect to. Can be a `DeviceType` to connect by device name or a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
-        :return: True if connection successful, False otherwise.
+        :return: Connection status
         """
 
         if isinstance(handle, DeviceType):
             handle = handle.value
 
         self.__write(f"connect {handle}")
-        ret = self.get_data_with_key("connected")
-        self.devices[self.active_device].connected = ret["connected"]
-        if ret["connected"] is True:
-            self.devices[self.active_device].name = handle
-            return True
-        else:
+        ret = self.get_data_with_key("connected")["connected"]
+        if ret is False:
             logging.info(f"Could not connect to {handle}")
-        return False
+        return ret
 
     def disconnect(self):
         """
         Disconnect from the active device.
+
+        :return: Connection status response
         """
         self.__write("disconnect")
         ret = self.get_data_with_key("connected")
-        self.devices[self.active_device].connected = ret["connected"]
-        return ret["connected"]
+        return ret
 
     def set_filters(self, enable: bool):
         """
         Set state of onboard filtering for all biochannels.
+
+        :return: Configuration response
         """
         self.__write(f"configure filtering {'on' if enable else 'off'}")
-        return self
+        return self.get_data_with_key("configure")
 
     def set_channels(
         self,
@@ -273,6 +241,8 @@ class SifiBridge:
     ):
         """
         Select which biochannels to enable.
+
+        :return: Configuration response
         """
         ecg = "on" if ecg else "off"
         emg = "on" if emg else "off"
@@ -281,16 +251,18 @@ class SifiBridge:
         ppg = "on" if ppg else "off"
 
         self.__write(f"configure channels {ecg} {emg} {eda} {imu} {ppg}")
-        return self
+        return self.get_data_with_key("configure")
 
     def set_ble_power(self, power: BlePower):
         """
         Set the BLE transmission power.
 
         :param power: Device transmission power level to set
+
+        :return: Configuration response
         """
         self.__write(f"configure ble-power {power.value}")
-        return self
+        return self.get_data_with_key("configure")
 
     def set_memory_mode(self, memory_config: MemoryMode):
         """
@@ -299,32 +271,38 @@ class SifiBridge:
         **NOTE**: See `MemoryMode` for more information.
 
         :param memory_config: Memory mode to set
+
+        :return: Configuration response
         """
         self.__write(f"configure memory {memory_config.value}")
-        return self
+        return self.get_data_with_key("configure")
 
     def configure_emg(self, bandpass_freqs: tuple = (20, 450), notch_freq: int = 50):
         """
-        Configure EMG biochannel filters. Internally calls `self.set_filters(True)`.
+        Configure EMG biochannel filters. Also calls `self.set_filters(True)`.
 
         :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
         :notch_freq: Mains notch filter frequency. {50, 60} Hz, otherwise notch is disabled.
+
+        :return: Configuration response
         """
         self.set_filters(True)
         self.__write(
             f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq}"
         )
-        return self
+        return self.get_data_with_key("configure")
 
     def configure_ecg(self, bandpass_freqs: tuple = (0, 30)):
         """
-        Configure ECG biochannel filters. Internally calls `self.set_filters(True)`.
+        Configure ECG biochannel filters. Also calls `self.set_filters(True)`.
 
         :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
+
+        :return: Configuration response
         """
         self.set_filters(True)
         self.__write(f"configure ecg {bandpass_freqs[0]} {bandpass_freqs[1]}")
-        return self
+        return self.get_data_with_key("configure")
 
     def configure_eda(
         self,
@@ -332,16 +310,18 @@ class SifiBridge:
         signal_freq: int = 0,
     ):
         """
-        Configure EDA biochannel. Internally calls `self.set_filters(True)`.
+        Configure EDA biochannel. Also calls `self.set_filters(True)`.
 
         :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
         :signal_freq: frequency of EDA excitation signal. 0 for DC.
+
+        :return: Configuration response
         """
         self.set_filters(True)
         self.__write(
             f"configure eda {bandpass_freqs[0]} {bandpass_freqs[1]} {signal_freq}"
         )
-        return self
+        return self.get_data_with_key("configure")
 
     def configure_ppg(
         self,
@@ -356,29 +336,35 @@ class SifiBridge:
 
         :param ir, red, green, blue: current of each PPG LED in mA (1-50)
         :param sens: light sensor sensitivity. See `PpgSensitivity` for more information.
+
+        :return: Configuration response
         """
 
         self.__write(f"configure ppg {ir} {red} {green} {blue} {sens}")
-        return self
+        return self.get_data_with_key("configure")
 
     def configure_sampling_freqs(self, ecg=500, emg=2000, eda=40, imu=50, ppg=50):
         """
         Configure the sampling frequencies [Hz] of biosignal acquisition.
 
         NOTE: Currently unused.
+
+        :return: Configuration response
         """
         self.__write(f"configure sampling-rates {ecg} {emg} {eda} {imu} {ppg}")
-        return self
+        return self.get_data_with_key("configure")
 
     def set_streaming_mode(self, streaming: bool):
         """
         Set the data delivery API mode. NOTE: Only supported on select BioPoint versions.
 
         :mode: True to use Low Latency mode, in which packets are sent much faster with data from all biosignals at once. False to use the conventional 1 biosignal-batch-per-packet (default)
+
+        :return: Configuration response
         """
         streaming = "on" if streaming else "off"
         self.__write(f"configure streaming-mode {streaming}")
-        return self
+        return self.get_data_with_key("configure")
 
     def start_memory_download(self, show_progress: bool) -> int:
         """
@@ -391,8 +377,8 @@ class SifiBridge:
         """
         kb_to_download = -1
 
-        if not self.devices[self.active_device].connected:
-            logging.warning(f"{self.active_device} does not seem to be connected")
+        if not self.show()["connected"]:
+            logging.warning(f"{self.active_device} is not connected")
             return -2
 
         if show_progress:
@@ -413,36 +399,41 @@ class SifiBridge:
 
         return kb_to_download
 
-    def send_command(self, command: DeviceCommand):
+    def send_command(self, command: DeviceCommand) -> bool:
         """
         Send a command to active device.
 
-        Refer to SifiCommands enum for possible values. All other values are reserved/unused/undefined behavior.
+        Refer to SifiCommands enum for possible values.
+
+        :return: True if command was sent successfully, False otherwise.
         """
-        self.__write(f"command {command}")
-        return self
+        self.__write(f"command {command.value}")
+        return self.get_data_with_key("command")["connected"]
 
     def start(self) -> dict:
         """
-        Start an acquisition. Takes into account the previous configurations sent.
+        Start an acquisition.
 
-        Returns the "Start Time" packet.
+        :return: "Start Time" packet. Returns an empty dict if unable to start.
         """
-        self.send_command(DeviceCommand.START_ACQUISITION)
+        if not self.send_command(DeviceCommand.START_ACQUISITION):
+            logging.error("Could not start acquisition")
+            return {}
         while True:
-            resp = self.get_data_with_key(["data", "year"])
-            if resp["id"] != self.active_device:
+            # Wait for start time packet
+            resp = self.get_data_with_key(["packet_type"])
+            if resp["packet_type"] != "start_time":
                 continue
-            break
-        logging.info(f"Started acquisition: {resp['data']}")
-        return resp
+            logging.info(f"Started acquisition: {resp['data']}")
+            return resp
 
     def stop(self):
         """
         Stop current acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying SifiBridge instance.
+
+        :return: True if command was sent successfully, False otherwise.
         """
-        self.send_command(DeviceCommand.STOP_ACQUISITION)
-        return self
+        return self.send_command(DeviceCommand.STOP_ACQUISITION)
 
     def get_data(self) -> dict:
         """
@@ -451,9 +442,9 @@ class SifiBridge:
 
         ret = dict()
         try:
-            ret = json.loads(self.bridge.stdout.readline().decode())
+            ret = json.loads(self._bridge.stdout.readline().decode())
         except Exception as e:
-            logging.error(e)
+            logging.error(f"{e}\n{ret}")
         return ret
 
     def get_data_with_key(self, keys: str | Iterable[str]) -> dict:
@@ -529,5 +520,5 @@ class SifiBridge:
 
     def __write(self, cmd: str):
         logging.info(cmd)
-        self.bridge.stdin.write((f"{cmd}\n").encode())
-        self.bridge.stdin.flush()
+        self._bridge.stdin.write((f"{cmd}\n").encode())
+        self._bridge.stdin.flush()
