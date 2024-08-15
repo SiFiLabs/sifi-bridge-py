@@ -111,13 +111,13 @@ class SifiBridge:
 
     active_device: str
 
-    def __init__(self, exec_path: str = "sfb"):
+    def __init__(self, exec_path: str = "sifibridge"):
         """
         Create a SiFi Bridge instance. Currently, only `stdin` and `stdout` are supported to communicate with Sifi Bridge.
 
-        For more documentation about SiFi Bridge, see `sfb -h` or the interactive help: `sfb; help;̀
+        For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help;̀
 
-        :param exec_path: Path to `sfb`. If it is in `PATH`, you can leave it at the default value.
+        :param exec_path: Path to `sifibridge`. If it is in `$PATH`, you can leave it at the default value.
         """
         cli_version = (
             sp.run([exec_path, "-V"], stdout=sp.PIPE)
