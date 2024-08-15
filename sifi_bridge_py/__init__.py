@@ -3,7 +3,7 @@ from .sifi_bridge import (
     ListSources,  # noqa
     DeviceType,  # noqa
     DeviceCommand,  # noqa
-    BlePower,  # noqa
+    BleTxPower,  # noqa
     MemoryMode,  # noqa
     PpgSensitivity,  # noqa
 )

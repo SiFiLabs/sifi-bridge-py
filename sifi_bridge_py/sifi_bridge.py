@@ -1,10 +1,7 @@
 import subprocess as sp
-
 import json
 from typing import Iterable
-
 from enum import Enum
-from dataclasses import dataclass
 
 import logging
 
@@ -52,7 +49,7 @@ class DeviceType(Enum):
     BIOARMBAND = "BioArmband"
 
 
-class BlePower(Enum):
+class BleTxPower(Enum):
     """
     Use in tandem with SifiBridge.set_ble_power() to set the BLE transmission power.
 
@@ -66,12 +63,16 @@ class BlePower(Enum):
 
 class MemoryMode(Enum):
     """
-    Sets how the device should deal with data storage. `HOST` streams data to the host computer via BLE. `DEVICE` saves the data stream to on-board flash. `BOTH` does both.
+    Sets how the device should deal with data storage.
+
+    - `STREAMING` streams data to the host computer via BLE
+    - `DEVICE` saves the data stream to on-board flash
+    - `BOTH` does both
 
     **NOTE**: BioArmband does not support on-board memory (`DEVICE` variant).
     """
 
-    HOST = "host"
+    STREAMING = "streaming"
     DEVICE = "device"
     BOTH = "both"
 
@@ -96,12 +97,12 @@ class ListSources(Enum):
 
     BLE = "ble"
     SERIAL = "serial"
-    CONTAINERS = "containers"
+    MANAGERS = "managers"
 
 
 class SifiBridge:
     """
-    Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on IO.
+    Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on I/O.
     """
 
     _bridge: sp.Popen
@@ -134,7 +135,7 @@ class SifiBridge:
         )
 
         self._bridge = sp.Popen([exec_path], stdin=sp.PIPE, stdout=sp.PIPE)
-        self.active_device = "device-1"
+        self.active_device = self.show()["id"]
 
     def show(self):
         """
@@ -143,12 +144,12 @@ class SifiBridge:
         self.__write("show")
         return self.get_data_with_key("ble_power")
 
-    def create_container(self, name: str, select: bool = True):
+    def create_manager(self, name: str, select: bool = True):
         """
-        Create a container and optionally select it.
+        Create a manager and optionally select it.
 
-        :param name: Container name
-        :param select: True to select the device after creation
+        :param name: Manager name
+        :param select: True to select the manager after creation
 
         Raises a `ValueError` if `uid` contains spaces.
 
@@ -162,27 +163,29 @@ class SifiBridge:
         resp = self.get_data_with_key("active")
         self.active_device = resp["active"]
         if not select:
-            return self.select_container(old_active)
+            return self.select_manager(old_active)
         return resp
 
-    def select_container(self, name: str):
+    def select_manager(self, name: str):
         """
-        Select a container as active.
+        Select a manager as active.
 
-        :param name: Name of the container to select
+        :param name: Name of the manager to select
 
-        :return: Response from Bridge
+        :return: Response from SiFi Bridge
         """
         self.__write(f"select {name}")
         resp = self.get_data_with_key("active")
         self.active_device = resp["active"]
         return resp
 
-    def delete_container(self, name: str):
+    def delete_manager(self, name: str):
         """
-        Delete a container. Selects the next available container.
+        Delete a manager and selects another one.
 
-        :param name: Name of the container to delete
+        :param name: Name of the manager to delete
+
+        :return: Response from SiFi Bridge
         """
         self.__write(f"delete {name}")
         return self.get_data_with_key("active")
@@ -190,6 +193,8 @@ class SifiBridge:
     def list_devices(self, source: ListSources) -> dict:
         """
         List all devices found from a given `source`.
+
+        :return: Response from SiFi Bridge
         """
         self.__write(f"list {source.value}")
         return self.get_data_with_key("found_devices")
@@ -253,7 +258,7 @@ class SifiBridge:
         self.__write(f"configure channels {ecg} {emg} {eda} {imu} {ppg}")
         return self.get_data_with_key("configure")
 
-    def set_ble_power(self, power: BlePower):
+    def set_ble_power(self, power: BleTxPower):
         """
         Set the BLE transmission power.
 
@@ -354,16 +359,18 @@ class SifiBridge:
         self.__write(f"configure sampling-rates {ecg} {emg} {eda} {imu} {ppg}")
         return self.get_data_with_key("configure")
 
-    def set_streaming_mode(self, streaming: bool):
+    def set_low_latency_mode(self, streaming: bool):
         """
-        Set the data delivery API mode. NOTE: Only supported on select BioPoint versions.
+        Set the low latency data mode.
 
-        :mode: True to use Low Latency mode, in which packets are sent much faster with data from all biosignals at once. False to use the conventional 1 biosignal-batch-per-packet (default)
+        **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly if you need to use this feature.
+
+        :mode: True to use low latency mode, in which packets are sent much faster with data from every biochannels as it comes in. False to use the conventional 1 biosignal-batch-per-packet (default)
 
         :return: Configuration response
         """
         streaming = "on" if streaming else "off"
-        self.__write(f"configure streaming-mode {streaming}")
+        self.__write(f"configure low-latency-mode {streaming}")
         return self.get_data_with_key("configure")
 
     def start_memory_download(self, show_progress: bool) -> int:
@@ -429,7 +436,7 @@ class SifiBridge:
 
     def stop(self):
         """
-        Stop current acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying Sifi Bridge instance.
+        Stop acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying Sifi Bridge instance.
 
         :return: True if command was sent successfully, False otherwise.
         """
@@ -437,7 +444,9 @@ class SifiBridge:
 
     def get_data(self) -> dict:
         """
-        Wait for Bridge to return a packet. Blocks until a packet is received and returns it as a dictionary.
+        Wait for Bridge to return a packet. Blocking operation.
+
+        :return: Packet as a dictionary.
         """
 
         ret = dict()
@@ -452,6 +461,8 @@ class SifiBridge:
         Wait for Bridge to return a packet with a specific key. Blocks until a packet is received and returns it as a dictionary.
 
         :param key: Key to wait for. If a string, will wait until the key is found. If an iterable, will wait until all keys are found.
+
+        :return: Packet with the requested key(s) as a dictionary.
         """
         ret = dict()
         if isinstance(keys, str):
@@ -476,6 +487,8 @@ class SifiBridge:
     def get_ecg(self):
         """
         Get ECG data.
+
+        :return: ECG data packet as a dictionary.
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
@@ -485,6 +498,8 @@ class SifiBridge:
     def get_emg(self):
         """
         Get EMG data.
+
+        :return: EMG data packet as a dictionary.
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
@@ -494,6 +509,8 @@ class SifiBridge:
     def get_eda(self):
         """
         Get EDA data.
+
+        :return: EDA data packet as a dictionary.
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
@@ -503,6 +520,8 @@ class SifiBridge:
     def get_imu(self):
         """
         Get IMU data.
+
+        :return: IMU data packet as a dictionary.
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
@@ -512,6 +531,8 @@ class SifiBridge:
     def get_ppg(self):
         """
         Get PPG data.
+
+        :return: PPG data packet as a dictionary.
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
@@ -519,6 +540,10 @@ class SifiBridge:
                 return data
 
     def __write(self, cmd: str):
+        """Write some data to SiFi Bridge's stdin.
+
+        :param cmd: Message to write.
+        """
         logging.info(cmd)
         self._bridge.stdin.write((f"{cmd}\n").encode())
         self._bridge.stdin.flush()
