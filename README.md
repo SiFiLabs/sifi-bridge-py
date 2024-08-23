@@ -23,3 +23,7 @@ Examples are available in the `examples/` directory of this project.
 ## Versioning
 
 The wrapper is updated for every SiFi Bridge version. Major and minor versions will always be kept in sync, while the patch version will vary for language-specific bug fixes.
+
+## Deployment
+
+To deploy to PyPI, push a tag to the `main` branch. The tag must respect semantic versioning format: `x.y.z`.
