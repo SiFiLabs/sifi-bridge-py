@@ -503,7 +503,7 @@ class SifiBridge:
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] in ["emg", "emgArmband"]:
+            if data["packet_type"] in ["emg", "emg_armband"]:
                 return data
 
     def get_eda(self):
