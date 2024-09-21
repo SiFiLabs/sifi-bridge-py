@@ -77,6 +77,20 @@ class MemoryMode(Enum):
     BOTH = "both"
 
 
+class EmgNotch(Enum):
+    """
+    Sets the EMG mains notch filter frequency.
+
+    - `NONE` disables the notch filter
+    - `FIFTY` sets the notch filter to 50 Hz
+    - `SIXTY` sets the notch filter to 60 Hz
+    """
+
+    Off = "off"
+    On50 = "on50"
+    On60 = "on60"
+
+
 class PpgSensitivity(Enum):
     """
     Used to set the PPG light sensor sensitivity.
@@ -112,13 +126,14 @@ class SifiBridge:
 
     active_device: str
 
-    def __init__(self, exec_path: str = "sifibridge"):
+    def __init__(self, exec_path: str = "sifibridge", use_lsl: bool = False):
         """
         Create a SiFi Bridge instance. Currently, only `stdin` and `stdout` are supported to communicate with Sifi Bridge.
 
         For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help;̀
 
         :param exec_path: Path to `sifibridge`. If it is in `$PATH`, you can leave it at the default value.
+        :param use_lsl: If `True`, will use LSL to stream sensor data instead of `stdout`. Refer to sifibridge's `lsl` REPL command for more information.
         """
         cli_version = (
             sp.run([exec_path, "-V"], stdout=sp.PIPE)
@@ -133,8 +148,10 @@ class SifiBridge:
             "Please ensure both have the same major and minor versions. "
             "See sifi_bridge_py.utils.get_sifi_bridge() to fetch the corresponding version."
         )
-
-        self._bridge = sp.Popen([exec_path], stdin=sp.PIPE, stdout=sp.PIPE)
+        command = [exec_path]
+        if use_lsl:
+            command.append("--lsl")
+        self._bridge = sp.Popen(command, stdin=sp.PIPE, stdout=sp.PIPE)
         self.active_device = self.show()["id"]
 
     def show(self):
@@ -199,11 +216,15 @@ class SifiBridge:
         self.__write(f"list {source.value}")
         return self.get_data_with_key("found_devices")
 
-    def connect(self, handle: DeviceType | str) -> bool:
+    def connect(self, handle: DeviceType | str | None = None) -> bool:
         """
         Try to connect to `handle`.
 
-        :param handle: Device handle to connect to. Can be a `DeviceType` to connect by device name or a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
+        :param handle: Device handle to connect to. Can be:
+
+            - `None` to connect to any device
+            - a `DeviceType` to connect by device name
+            - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
         :return: Connection status
         """
@@ -211,7 +232,7 @@ class SifiBridge:
         if isinstance(handle, DeviceType):
             handle = handle.value
 
-        self.__write(f"connect {handle}")
+        self.__write(f"connect {handle if handle is not None else ''}")
         ret = self.get_data_with_key("connected")["connected"]
         if ret is False:
             logging.info(f"Could not connect to {handle}")
@@ -282,18 +303,20 @@ class SifiBridge:
         self.__write(f"configure memory {memory_config.value}")
         return self.get_data_with_key("configure")
 
-    def configure_emg(self, bandpass_freqs: tuple = (20, 450), notch_freq: int = 50):
+    def configure_emg(
+        self, bandpass_freqs: tuple = (20, 450), notch_freq: EmgNotch = EmgNotch.On50
+    ):
         """
         Configure EMG biochannel filters. Also calls `self.set_filters(True)`.
 
         :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
-        :notch_freq: Mains notch filter frequency. {50, 60} Hz, otherwise notch is disabled.
+        :param notch_freq: Mains notch filter frequency. See `EmgNotch` for more information.
 
         :return: Configuration response
         """
         self.set_filters(True)
         self.__write(
-            f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq}"
+            f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq.value}"
         )
         return self.get_data_with_key("configure")
 
@@ -318,7 +341,7 @@ class SifiBridge:
         Configure EDA biochannel. Also calls `self.set_filters(True)`.
 
         :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
-        :signal_freq: frequency of EDA excitation signal. 0 for DC.
+        :param signal_freq: frequency of EDA excitation signal. 0 for DC.
 
         :return: Configuration response
         """
@@ -339,7 +362,10 @@ class SifiBridge:
         """
         Configure PPG biochannel. Internally calls `self.set_filters(True)`.
 
-        :param ir, red, green, blue: current of each PPG LED in mA (1-50)
+        :param ir: current of IR LED in mA (1-50)
+        :param r: current of R LED in mA (1-50)
+        :param g: current of G LED in mA (1-50)
+        :param b: current of B LED in mA (1-50)
         :param sens: light sensor sensitivity. See `PpgSensitivity` for more information.
 
         :return: Configuration response
@@ -359,48 +385,49 @@ class SifiBridge:
         self.__write(f"configure sampling-rates {ecg} {emg} {eda} {imu} {ppg}")
         return self.get_data_with_key("configure")
 
-    def set_low_latency_mode(self, streaming: bool):
+    def set_low_latency_mode(self, on: bool):
         """
         Set the low latency data mode.
 
         **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly if you need to use this feature.
 
-        :mode: True to use low latency mode, in which packets are sent much faster with data from every biochannels as it comes in. False to use the conventional 1 biosignal-batch-per-packet (default)
+        :param on: True to use low latency mode, in which packets are sent much faster with data from every biochannels as it comes in. False to use the conventional 1 biosignal-batch-per-packet (default)
 
         :return: Configuration response
         """
-        streaming = "on" if streaming else "off"
+        streaming = "on" if on else "off"
         self.__write(f"configure low-latency-mode {streaming}")
         return self.get_data_with_key("configure")
 
-    def start_memory_download(self, show_progress: bool) -> int:
+    def start_memory_download(self) -> int:
         """
         Start downloading the data stored on BioPoint's onboard memory.
-        It is up to the user to then continuously `wait_for_data` and manage how to store the data (to file, to Python object, etc).
+        It is up to the user to then continuously `get_data` and manage how to store the data (to file, to Python object, etc).
 
-        :param show_progress: If True, will return the number of kilobytes to download. If False, will return -1.
+        :param show_progress: If True, will return the number of kilobytes to download. If False, will return `None`.
 
-        :return: Number of kilobytes to download. -1 if show_progress is False. -2 if an error happened.
+        :return: Number of kilobytes to download.
+
+        :raise ConnectionError: If the device is not connected.
+        :raise TypeError: If the device does not support memory download.
         """
-        kb_to_download = -1
-
         if not self.show()["connected"]:
-            logging.warning(f"{self.active_device} is not connected")
-            return -2
+            raise ConnectionError(f"{self.active_device} is not connected")
 
-        if show_progress:
-            self.send_command(DeviceCommand.START_STATUS_UPDATE)
-            while True:
-                try:
-                    data = self.get_data_with_key(["data", "memory_used_kb"])
-                    if data["id"] != self.active_device:
-                        continue
-                    kb_to_download = data["data"]["memory_used_kb"]
-                    break
-                except KeyError:
-                    continue
+        self.send_command(DeviceCommand.START_STATUS_UPDATE)
+        kb_to_download = None
+        while True:
+            data = self.get_data()
+            if data["id"] != self.active_device or data["packet_type"] != "status":
+                continue
+            if "memory_used_kb" not in data["data"].keys():
+                raise TypeError(
+                    f"Attempted to download memory from an unsupported device ({data['device']})."
+                )
+            kb_to_download = data["data"]["memory_used_kb"][0]
+            break
 
-            logging.info(f"KB to download: {kb_to_download}")
+        logging.info(f"kB to download: {kb_to_download}")
 
         self.send_command(DeviceCommand.DOWNLOAD_ONBOARD_MEMORY)
 
@@ -410,7 +437,7 @@ class SifiBridge:
         """
         Send a command to active device.
 
-        Refer to SifiCommands enum for possible values.
+        :param command: Command to send
 
         :return: True if command was sent successfully, False otherwise.
         """
@@ -421,11 +448,13 @@ class SifiBridge:
         """
         Start an acquisition.
 
-        :return: "Start Time" packet. Returns an empty dict if unable to start.
+        :return: "Start Time" packet.
+
+        :raise ConnectionError: If unable to send the command, e.g. if disconnected.
+
         """
         if not self.send_command(DeviceCommand.START_ACQUISITION):
-            logging.error("Could not start acquisition")
-            return {}
+            raise ConnectionError("Could not start acquisition")
         while True:
             # Wait for start time packet
             resp = self.get_data_with_key(["packet_type"])
@@ -434,7 +463,7 @@ class SifiBridge:
             logging.info(f"Started acquisition: {resp['data']}")
             return resp
 
-    def stop(self):
+    def stop(self) -> bool:
         """
         Stop acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying Sifi Bridge instance.
 
@@ -447,13 +476,11 @@ class SifiBridge:
         Wait for Bridge to return a packet. Blocking operation.
 
         :return: Packet as a dictionary.
+        :raise
         """
 
-        ret = dict()
-        try:
-            ret = json.loads(self._bridge.stdout.readline().decode())
-        except Exception as e:
-            logging.error(f"{e}\n{ret}")
+        packet = self._bridge.stdout.readline().decode()
+        ret = json.loads(packet)
         return ret
 
     def get_data_with_key(self, keys: str | Iterable[str]) -> dict:
