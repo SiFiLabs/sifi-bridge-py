@@ -1,15 +1,22 @@
 [project]
 name = "sifi-bridge-py"
-version = "1.0.2"
-description = "Python bindings over the sifi_bridge program."
+version = "1.1.0"
+description = "Python bindings over the SiFi Bridge tool."
 authors = [{ name = "SiFi Labs", email = "gabrielg@sifilabs.com" }]
-dependencies = ["numpy>=1.26.4", "requests>=2.32.3", "semantic-version>=2.10.0"]
-requires-python = ">=3.10"
+dependencies = ["numpy>=2.0.2", "requests>=2.32.3", "semantic-version>=2.10.0"]
+requires-python = "<3.13, >=3.9"
 readme = "README.md"
 license = { text = "MIT" }
+urls = { repository = "https://github.com/SiFiLabs/sifi-bridge-py" }
 
 [project.optional-dependencies]
-examples = ["matplotlib>=3.9.0"]
+examples = [
+    "matplotlib>=3.9.2",
+    "pylsl>=1.16.2",
+    "PySide6>=6.7.2",
+    "pyqtgraph>=0.13.7",
+]
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"

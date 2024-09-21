@@ -3,17 +3,17 @@ import logging
 
 import matplotlib.pyplot as plt
 
+from sifi_bridge_py.sifi_bridge import EmgNotch
+
 
 def main():
     device_type = DeviceType.BIOARMBAND
-
-    logging.basicConfig(level=logging.INFO)
 
     sb = SifiBridge()
     while not sb.connect(device_type):
         continue
     sb.set_channels(emg=True)
-    sb.configure_emg((20, 450), 50)
+    sb.configure_emg((20, 450), EmgNotch.On60)
     sb.start()
 
     emg_data = (
@@ -23,7 +23,7 @@ def main():
     )
     base_key = "emg0" if device_type == DeviceType.BIOARMBAND else "emg"
 
-    while len(emg_data[base_key]) < 10000:
+    while len(emg_data[base_key]) < 1000000:
         new_data = sb.get_emg()
         print(f"Sampling rate: {new_data['sample_rate']:.2f}")
         for e, v in new_data["data"].items():
@@ -45,4 +45,6 @@ def main():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     main()
