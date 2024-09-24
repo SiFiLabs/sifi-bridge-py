@@ -77,20 +77,6 @@ class MemoryMode(Enum):
     BOTH = "both"
 
 
-class EmgNotch(Enum):
-    """
-    Sets the EMG mains notch filter frequency.
-
-    - `NONE` disables the notch filter
-    - `FIFTY` sets the notch filter to 50 Hz
-    - `SIXTY` sets the notch filter to 60 Hz
-    """
-
-    Off = "off"
-    On50 = "on50"
-    On60 = "on60"
-
-
 class PpgSensitivity(Enum):
     """
     Used to set the PPG light sensor sensitivity.
@@ -315,22 +301,26 @@ class SifiBridge:
     def configure_emg(
         self,
         bandpass_freqs: tuple = (20, 450),
-        notch_freq: EmgNotch | str = EmgNotch.On50,
+        notch_freq: int | None = 50,
     ):
         """
         Configure EMG biochannel filters. Also calls `self.set_filters(True)`.
 
         :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
-        :param notch_freq: Mains notch filter frequency. See `EmgNotch` for more information.
+        :param notch_freq: Mains notch filter frequency. Possible choices: {None, 50, 60} Hz or any other value to disable.
 
         :return: Configuration response
         """
-        if isinstance(notch_freq, str):
-            notch_freq = EmgNotch(notch_freq)
-
+        if notch_freq == 50:
+            notch_freq = "on50"
+        elif notch_freq == 60:
+            notch_freq = "on60"
+        else:
+            notch_freq = "off"
+            
         self.set_filters(True)
         self.__write(
-            f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq.value}"
+            f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq}"
         )
         return self.get_data_with_key("configure")
 

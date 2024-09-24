@@ -4,7 +4,6 @@ from .sifi_bridge import (
     DeviceType,  # noqa
     BleTxPower,  # noqa
     MemoryMode,  # noqa
-    EmgNotch,  # noqa
     PpgSensitivity,  # noqa
     ListSources,  # noqa
     SifiBridge,  # noqa
