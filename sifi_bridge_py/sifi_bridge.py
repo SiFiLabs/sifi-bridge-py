@@ -207,12 +207,15 @@ class SifiBridge:
         self.__write(f"delete {name}")
         return self.get_data_with_key("active")
 
-    def list_devices(self, source: ListSources) -> dict:
+    def list_devices(self, source: ListSources | str) -> dict:
         """
         List all devices found from a given `source`.
 
         :return: Response from SiFi Bridge
         """
+        if isinstance(source, str):
+            source = ListSources(source)
+
         self.__write(f"list {source.value}")
         return self.get_data_with_key("found_devices")
 
@@ -279,7 +282,7 @@ class SifiBridge:
         self.__write(f"configure channels {ecg} {emg} {eda} {imu} {ppg}")
         return self.get_data_with_key("configure")
 
-    def set_ble_power(self, power: BleTxPower):
+    def set_ble_power(self, power: BleTxPower | str):
         """
         Set the BLE transmission power.
 
@@ -287,10 +290,13 @@ class SifiBridge:
 
         :return: Configuration response
         """
+        if isinstance(power, str):
+            power = BleTxPower(power)
+
         self.__write(f"configure ble-power {power.value}")
         return self.get_data_with_key("configure")
 
-    def set_memory_mode(self, memory_config: MemoryMode):
+    def set_memory_mode(self, memory_config: MemoryMode | str):
         """
         Configure the device's memory mode.
 
@@ -300,11 +306,16 @@ class SifiBridge:
 
         :return: Configuration response
         """
+        if isinstance(memory_config, str):
+            memory_config = MemoryMode(memory_config)
+
         self.__write(f"configure memory {memory_config.value}")
         return self.get_data_with_key("configure")
 
     def configure_emg(
-        self, bandpass_freqs: tuple = (20, 450), notch_freq: EmgNotch = EmgNotch.On50
+        self,
+        bandpass_freqs: tuple = (20, 450),
+        notch_freq: EmgNotch | str = EmgNotch.On50,
     ):
         """
         Configure EMG biochannel filters. Also calls `self.set_filters(True)`.
@@ -314,6 +325,9 @@ class SifiBridge:
 
         :return: Configuration response
         """
+        if isinstance(notch_freq, str):
+            notch_freq = EmgNotch(notch_freq)
+
         self.set_filters(True)
         self.__write(
             f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq.value}"
@@ -357,7 +371,7 @@ class SifiBridge:
         red: int = 9,
         green: int = 9,
         blue: int = 9,
-        sens: PpgSensitivity = PpgSensitivity.MEDIUM,
+        sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
     ):
         """
         Configure PPG biochannel. Internally calls `self.set_filters(True)`.
@@ -370,8 +384,10 @@ class SifiBridge:
 
         :return: Configuration response
         """
+        if isinstance(sens, str):
+            sens = PpgSensitivity(sens)
 
-        self.__write(f"configure ppg {ir} {red} {green} {blue} {sens}")
+        self.__write(f"configure ppg {ir} {red} {green} {blue} {sens.value}")
         return self.get_data_with_key("configure")
 
     def configure_sampling_freqs(self, ecg=500, emg=2000, eda=40, imu=50, ppg=50):
@@ -433,7 +449,7 @@ class SifiBridge:
 
         return kb_to_download
 
-    def send_command(self, command: DeviceCommand) -> bool:
+    def send_command(self, command: DeviceCommand | str) -> bool:
         """
         Send a command to active device.
 
@@ -441,6 +457,9 @@ class SifiBridge:
 
         :return: True if command was sent successfully, False otherwise.
         """
+        if isinstance(command, str):
+            command = DeviceCommand(command)
+
         self.__write(f"command {command.value}")
         return self.get_data_with_key("command")["connected"]
 
