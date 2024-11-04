@@ -26,7 +26,7 @@ jobs:
           curl -sSL https://pdm-project.org/install-pdm.py | python3 -
       
       - name: Build package
-        run: pdm build
+        run: pdm build -v
         
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

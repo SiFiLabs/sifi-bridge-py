@@ -6,8 +6,7 @@ from enum import Enum
 import logging
 
 from sifi_bridge_py import utils
-
-
+    
 class DeviceCommand(Enum):
     """
     Use in tandem with SifiBridge.send_command() to control Sifi device operation.
@@ -97,8 +96,7 @@ class ListSources(Enum):
 
     BLE = "ble"
     SERIAL = "serial"
-    MANAGERS = "managers"
-
+    DEVICES = "devices"
 
 class SifiBridge:
     """
@@ -112,32 +110,52 @@ class SifiBridge:
 
     active_device: str
 
-    def __init__(self, exec_path: str = "sifibridge", use_lsl: bool = False):
+    def __init__(self, data_transport: str = "stdout", use_lsl: bool = False):
         """
-        Create a SiFi Bridge instance. Currently, only `stdin` and `stdout` are supported to communicate with Sifi Bridge.
+        Create a SiFi Bridge instance. Currently, only standard input is supported to interact with SiFi Bridge.
 
-        For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help;̀
+        The constructor first checks if `sifibridge` is present in the current working directory. 
+        If it is, it checks if its version is compatible with the Python package. 
+        If they are incompatible OR `sifibridge` is not already in the directory, the latest compatible version is downloaded from the official Github repository.
+        If they are compatible, no matter the patch version, the existing `sifibridge` is used.
+        
+        For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help`
 
-        :param exec_path: Path to `sifibridge`. If it is in `$PATH`, you can leave it at the default value.
-        :param use_lsl: If `True`, will use LSL to stream sensor data instead of `stdout`. Refer to sifibridge's `lsl` REPL command for more information.
+        :param data_transport: Data transport. Can be any of {`"stdout"`, `"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`, `"file://data/root/directory/"`}.
+        :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to sifibridge's `lsl` REPL command for more information.
         """
-        cli_version = (
-            sp.run([exec_path, "-V"], stdout=sp.PIPE)
-            .stdout.decode()
-            .strip()
-            .split(" ")[-1]
-        )
-        py_version = utils.get_package_version()
+        
+        executable = "./sifibridge"
+        
+        # Check if sifibridge in cwd
+        try:
+            cli_version = (
+                sp.run([executable, "-V"], stdout=sp.PIPE)
+                .stdout.decode()
+                .strip()
+                .split(" ")[-1]
+            )
+        except FileNotFoundError:
+            cli_version = "0.0.1"
+        py_version = utils._get_package_version()
 
-        assert cli_version[0:3] == py_version[0:3], (
-            f"Version mismatch between sifi_bridge_py ({py_version}) and {exec_path} ({cli_version}). "
-            "Please ensure both have the same major and minor versions. "
-            "See sifi_bridge_py.utils.get_sifi_bridge() to fetch the corresponding version."
-        )
-        command = [exec_path]
+        if not utils._are__compatible(cli_version, py_version):
+            logging.info("Downloading latest compatible version of sifibridge.")
+            executable = utils.get_sifi_bridge("./")
+        
+        exec_command = [executable]
+        
+        if data_transport != "stdout":
+            output_option = data_transport.split("://")
+            exec_command.append(f"--{output_option[0]}-out")
+            exec_command.append(output_option[1])
+            
         if use_lsl:
-            command.append("--lsl")
-        self._bridge = sp.Popen(command, stdin=sp.PIPE, stdout=sp.PIPE)
+            exec_command.append("--lsl")
+            
+        logging.info(f"Launching executable: {' '.join(exec_command)}")
+        self._bridge = sp.Popen(exec_command, stdin=sp.PIPE, stdout=sp.PIPE)
+            
         self.active_device = self.show()["id"]
 
     def show(self):
@@ -407,10 +425,9 @@ class SifiBridge:
 
     def start_memory_download(self) -> int:
         """
-        Start downloading the data stored on BioPoint's onboard memory.
-        It is up to the user to then continuously `get_data` and manage how to store the data (to file, to Python object, etc).
-
-        :param show_progress: If True, will return the number of kilobytes to download. If False, will return `None`.
+        Start downloading the data stored on BioPoint's onboard memory. Depending on the output transport, the Python wrapper shall:
+            - Continuously `self.get_data()` if the transport is `stdout` (default)
+            - Wait for a packet of type `"memory"` with the `"status"` key set to `"MemoryDownloadCompleted"`.
 
         :return: Number of kilobytes to download.
 
@@ -426,11 +443,11 @@ class SifiBridge:
             data = self.get_data()
             if data["id"] != self.active_device or data["packet_type"] != "status":
                 continue
-            if "memory_used_kb" not in data["data"].keys():
+            if "memory_used_kbytes" not in data["data"].keys():
                 raise TypeError(
                     f"Attempted to download memory from an unsupported device ({data['device']})."
                 )
-            kb_to_download = data["data"]["memory_used_kb"][0]
+            kb_to_download = data["data"]["memory_used_kbytes"][0]
             break
 
         logging.info(f"kB to download: {kb_to_download}")
@@ -453,24 +470,16 @@ class SifiBridge:
         self.__write(f"command {command.value}")
         return self.get_data_with_key("command")["connected"]
 
-    def start(self) -> dict:
+    def start(self) -> bool:
         """
         Start an acquisition.
 
-        :return: "Start Time" packet.
-
+        :return: True if command was sent successfully, False otherwise.
+        
         :raise ConnectionError: If unable to send the command, e.g. if disconnected.
 
         """
-        if not self.send_command(DeviceCommand.START_ACQUISITION):
-            raise ConnectionError("Could not start acquisition")
-        while True:
-            # Wait for start time packet
-            resp = self.get_data_with_key(["packet_type"])
-            if resp["packet_type"] != "start_time":
-                continue
-            logging.info(f"Started acquisition: {resp['data']}")
-            return resp
+        return self.send_command(DeviceCommand.START_ACQUISITION)
 
     def stop(self) -> bool:
         """
