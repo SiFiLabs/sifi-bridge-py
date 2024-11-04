@@ -6,7 +6,7 @@
 
 SiFi Bridge Python is a convenient wrapper over [SiFi Bridge CLI](https://github.com/SiFiLabs/sifi-bridge-pub).
 
-The Python wrapper opens the CLI tool in a subprocess. Thus, it is highly recommended to implement threading, since reading from standard input is a blocking operation. To use the wrapper, start by instantiating a `SifiBridge` object. All relevant usage documentation is provided as inline doc-strings.
+The Python wrapper opens the CLI tool in a subprocess. Thus, it is highly recommended to implement threading, since reading from standard input is a blocking operation. To use the wrapper, start by instantiating a `SifiBridge` object. Documentation is provided as inline doc-strings. It is recommended to then deliver the samples with some sort of higher-level server-client scheme.
 
 ## Documentation
 
@@ -22,10 +22,10 @@ Examples are available in the `examples/` directory of this project.
 
 ## Versioning
 
-The wrapper is updated for every SiFi Bridge version. Major and minor versions will always be kept in sync, while the patch version will vary for language-specific bug fixes.
+The wrapper is updated for every SiFi Bridge version. Major and minor versions will always be kept in sync, while the patch version will vary for project-specific bug fixes.
 
 ## Deployment
 
-**NOTE** If you add new enums or types to `sifi-bridge-py`, don't forget to re-export them in `src/__init__.py`. 
+**NOTE** If you add new enums or types to `sifi-bridge-py`, don't forget to re-export them in `src/__init__.py`.
 
 To deploy to PyPI, push a tag to the `main` branch. The tag must respect semantic versioning format: `x.y.z`.
