@@ -1,6 +1,6 @@
 import sifi_bridge_py as sb
 import time
-
+import numpy as np
 
 def main():
     NUM_RUNS = 50
@@ -30,10 +30,8 @@ def main():
         print(
             f"Run {i+1:2d}/{NUM_RUNS} Avg latency ({NUM_TRIES} tries): {t_arr[i]*1000:.2f} ms"
         )
-
-    import numpy as np
-
-    print(t_arr)
+        
+    bridge.disconnect()
     print(np.mean(t_arr))
     print(np.std(t_arr))
 
