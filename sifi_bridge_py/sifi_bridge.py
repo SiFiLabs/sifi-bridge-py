@@ -165,12 +165,12 @@ class SifiBridge:
         self.__write("show")
         return self.get_data_with_key("ble_power")
 
-    def create_manager(self, name: str, select: bool = True):
+    def create_device(self, name: str, select: bool = True):
         """
-        Create a manager and optionally select it.
+        Create a device and optionally select it.
 
-        :param name: Manager name
-        :param select: True to select the manager after creation
+        :param name: Device name
+        :param select: True to select the device after creation
 
         Raises a `ValueError` if `uid` contains spaces.
 
@@ -184,14 +184,14 @@ class SifiBridge:
         resp = self.get_data_with_key("active")
         self.active_device = resp["active"]
         if not select:
-            return self.select_manager(old_active)
+            return self.select_device(old_active)
         return resp
 
-    def select_manager(self, name: str):
+    def select_device(self, name: str):
         """
-        Select a manager as active.
+        Select a device.
 
-        :param name: Name of the manager to select
+        :param name: Name of the device to select
 
         :return: Response from SiFi Bridge
         """
@@ -200,9 +200,9 @@ class SifiBridge:
         self.active_device = resp["active"]
         return resp
 
-    def delete_manager(self, name: str):
+    def delete_device(self, name: str):
         """
-        Delete a manager and selects another one.
+        Delete a device and selects another one.
 
         :param name: Name of the manager to delete
 
@@ -211,7 +211,7 @@ class SifiBridge:
         self.__write(f"delete {name}")
         return self.get_data_with_key("active")
 
-    def list_devices(self, source: ListSources | str) -> dict:
+    def list_devices(self, source: ListSources | str) -> list[str]:
         """
         List all devices found from a given `source`.
 
@@ -221,7 +221,7 @@ class SifiBridge:
             source = ListSources(source)
 
         self.__write(f"list {source.value}")
-        return self.get_data_with_key("found_devices")
+        return self.get_data_with_key("found_devices")["found_devices"]
 
     def connect(self, handle: DeviceType | str | None = None) -> bool:
         """
