@@ -24,7 +24,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           curl -sSL https://pdm-project.org/install-pdm.py | python3 -
-
+      
+      - name: Install package
+        run: pip install ./
+        
       - name: Run Python unit tests
         run: python -m unittest -v
 
