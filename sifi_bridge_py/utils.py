@@ -22,7 +22,7 @@ def _get_package_version():
     """
     return metadata.version("sifi_bridge_py")
 
-def _are__compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
+def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
     """Check if two semantic verison-formatted strings are compatible (major and minor versions match).
 
     :return bool: True if compatible, False otherwise.
@@ -50,7 +50,7 @@ def _fetch_releases() -> list[dict]:
     
 def _get_latest_matching_version(releases: list[dict]) -> Version:
     sbp_version = Version(_get_package_version())
-    versions = list(filter(lambda ver: _are__compatible(sbp_version, ver),[release["tag_name"] for release in releases]))
+    versions = list(filter(lambda ver: _are_compatible(sbp_version, ver),[release["tag_name"] for release in releases]))
     return max(versions)
 
 def _get_release_assets(releases, version) -> list[dict]:
@@ -116,7 +116,7 @@ def get_sifi_bridge(output_dir: str):
     if arch == "amd64":
         # Check for windows
         arch = "x86_64"
-    asset = _get_matching_asset(assets, arch, plftm)
+    asset = _get_matching_asset(assets, arch, pltfm)
     exe = _download_and_extract_sifibridge(asset, output_dir)
     return exe
 
