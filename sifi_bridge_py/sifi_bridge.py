@@ -139,7 +139,7 @@ class SifiBridge:
             cli_version = "0.0.1"
         py_version = utils._get_package_version()
 
-        if not utils._are__compatible(cli_version, py_version):
+        if not utils._are_compatible(cli_version, py_version):
             logging.info("Downloading latest compatible version of sifibridge.")
             executable = utils.get_sifi_bridge("./")
         
