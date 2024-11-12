@@ -112,7 +112,11 @@ def get_sifi_bridge(output_dir: str):
     releases = _fetch_releases()
     ver = _get_latest_matching_version(releases)
     assets = _get_release_assets(releases, ver)
-    asset = _get_matching_asset(assets, machine(), system())
+    arch, pltfm = machine().lower(), system().lower()
+    if arch == "amd64":
+        # Check for windows
+        arch = "x86_64"
+    asset = _get_matching_asset(assets, arch, plftm)
     exe = _download_and_extract_sifibridge(asset, output_dir)
     return exe
 
