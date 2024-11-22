@@ -1,5 +1,6 @@
 import sifi_bridge_py as sbp
 import logging
+import time
 
 from sifi_bridge_py.sifi_bridge import DeviceType
 
@@ -13,16 +14,18 @@ def main():
     print(f"Start memory download for {kb} KB")
 
     ecg_data = []
-
+    pkt_number = 0
+    t0 = time.time()
     while True:
         data = sb.get_data()
-
+        pkt_number += 1
         if data["status"] == "MemoryDownloadCompleted":
             break
         elif data["packet_type"] == "ecg":
             ecg_data.extend(data["data"]["ecg"])
-
-    print(f"Downloaded {len(ecg_data)} samples of ECG.")
+    dt = time.time() - t0
+    print(f"Download throughput: {pkt_number*227 / (1000*dt):.2f} kBps")
+    print(f"Downloaded {len(ecg_data)} samples of ECG in {dt:.2f} seconds")
 
 
 if __name__ == "__main__":
