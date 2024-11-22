@@ -34,10 +34,7 @@ def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
         ver_2 = Version(ver_2)
     
     are_compatible = ver_1.major == ver_2.major and ver_1.minor == ver_2.minor
-    
-    if not are_compatible:
-        logging.info(f"{ver_1} and {ver_2} are not compatible: major and minor version do not match.")
-        
+ 
     return are_compatible
     
 def _fetch_releases() -> list[dict]:
@@ -116,6 +113,8 @@ def get_sifi_bridge(output_dir: str):
     if arch == "amd64":
         # Check for windows
         arch = "x86_64"
+    elif arch == "arm64":
+        arch = "aarch64"
     asset = _get_matching_asset(assets, arch, pltfm)
     exe = _download_and_extract_sifibridge(asset, output_dir)
     return exe
