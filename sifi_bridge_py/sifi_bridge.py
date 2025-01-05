@@ -14,12 +14,14 @@ class PacketType(Enum):
 
     # Example
 
+    ```python
     >>> sb = SifiBridge()
     >>> sb.connect()
     >>> sb.start()
-    >>> packet = sb.get_data_with_key(PacketType.ECG.value)
-    >>> print(packet["packet_type"])
-    "ecg"
+    >>> packet = sb.get_ecg()
+    >>> print(packet["packet_type"] == PacketType.ECG.value)
+    True
+    ```
     """
 
     ECG = "ecg"
@@ -39,15 +41,15 @@ class SensorChannel(Enum):
     # Example
 
     >>> sb = SifiBridge()
-    >>> sb.connect(DeviceType.SiFiBand)
+    >>> sb.connect()
     >>> sb.start()
-    >>> packet = sb.get_data_with_key(PacketType.EMG.value)
-    >>> emg = packet["data"]
-    >>> print(len(emg)) # 8 EMG channels
-    8
-    >>> emg_0 = emg[SensorChannel.EMG_ARMBAND[0].value] # get first channel
-    >>> print(len(emg_0), emg_0)
-    14 [35e-6, ..., -100e-6]
+    >>> packet = sb.get_imu()
+    >>> imu = packet["data"]
+    >>> print(len(imu) == len(SensorChannel.IMU.value)) # 7 IMU channels
+    True
+    >>> qw = emg[SensorChannel.IMU.value[0]] # get first channel
+    >>> print(len(qw), qw)
+    8 [0.5427, 0.5423, 0.5426, 0.5424, 0.5424, 0.5428, 0.5424, 0.5422]
     """
 
     ECG = "ecg"
@@ -541,7 +543,7 @@ class SifiBridge:
             command = DeviceCommand(command)
 
         self.__write(f"command {command.value}")
-        return self.get_data_with_key("command")["connected"]
+        return self.get_data_with_key("command")["command"]["connected"]
 
     def start(self) -> bool:
         """
@@ -655,6 +657,17 @@ class SifiBridge:
         while True:
             data = self.get_data_with_key(["packet_type"])
             if data["packet_type"] == "ppg":
+                return data
+
+    def get_temperature(self):
+        """
+        Get temperature data.
+
+        :return: Temperature data packet as a dictionary.
+        """
+        while True:
+            data = self.get_data_with_key(["packet_type"])
+            if data["packet_type"] == PacketType.TEMPERATURE.value:
                 return data
 
     def __write(self, cmd: str):
