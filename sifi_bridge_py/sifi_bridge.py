@@ -686,3 +686,7 @@ class SifiBridge:
         logging.info(cmd)
         self._bridge.stdin.write((f"{cmd}\n").encode())
         self._bridge.stdin.flush()
+
+    def __del__(self):
+        self.__write("quit")
+        self._bridge.terminate()
