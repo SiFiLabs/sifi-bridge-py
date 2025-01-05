@@ -6,10 +6,75 @@ from enum import Enum
 import logging
 
 from sifi_bridge_py import utils
-    
+
+
+class PacketType(Enum):
+    """
+    Data packet types that can be received from SiFi Bridge.
+
+    # Example
+
+    >>> sb = SifiBridge()
+    >>> sb.connect()
+    >>> sb.start()
+    >>> packet = sb.get_data_with_key(PacketType.ECG.value)
+    >>> print(packet["packet_type"])
+    "ecg"
+    """
+
+    ECG = "ecg"
+    EMG = "emg"
+    EDA = "eda"
+    IMU = "imu"
+    PPG = "ppg"
+    STATUS = "status"
+    MEMORY = "memory"
+    TEMPERATURE = "temperature"
+
+
+class SensorChannel(Enum):
+    """
+    Sensor channel names as returned by `sifibridge`.
+
+    # Example
+
+    >>> sb = SifiBridge()
+    >>> sb.connect(DeviceType.SiFiBand)
+    >>> sb.start()
+    >>> packet = sb.get_data_with_key(PacketType.EMG.value)
+    >>> emg = packet["data"]
+    >>> print(len(emg)) # 8 EMG channels
+    8
+    >>> emg_0 = emg[SensorChannel.EMG_ARMBAND[0].value] # get first channel
+    >>> print(len(emg_0), emg_0)
+    14 [35e-6, ..., -100e-6]
+    """
+
+    ECG = "ecg"
+    """ECG sensor channel."""
+    EMG = "emg"
+    """EMG sensor channel."""
+    EMG_ARMBAND = ("emg0", "emg1", "emg2", "emg3", "emg4", "emg5", "emg6", "emg7")
+    """SiFiBand 8-channel EMG sensor channels."""
+    EDA = "eda"
+    """EDA/BIOZ sensor channel."""
+    IMU = ("qw", "qx", "qy", "qz", "ax", "ay", "az")
+    """IMU sensor channels."""
+    PPG = ("ir", "r", "g", "b")
+    """PPG sensor channels."""
+    TEMPERATURE = "temperature"
+    """Temperature sensor channel."""
+
+
 class DeviceCommand(Enum):
     """
     Use in tandem with SifiBridge.send_command() to control Sifi device operation.
+
+    # Example
+
+    >>> sb = SifiBridge()
+    >>> sb.connect()
+    >>> sb.send_command(DeviceCommand.OPEN_LED_1) # LED 1 is turned on
     """
 
     START_ACQUISITION = "start-acquisition"
@@ -44,8 +109,8 @@ class DeviceType(Enum):
     BIOPOINT_V1_1 = "BioPoint_v1_1"
     BIOPOINT_V1_2 = "BioPoint_v1_2"
     BIOPOINT_V1_3 = "BioPoint_v1_3"
-    BIOPOINT_V1_4 = "BioPoint_v1_4"
     BIOARMBAND = "BioArmband"
+    SIFIBAND = "SiFiBand"
 
 
 class BleTxPower(Enum):
@@ -98,6 +163,7 @@ class ListSources(Enum):
     SERIAL = "serial"
     DEVICES = "devices"
 
+
 class SifiBridge:
     """
     Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on I/O.
@@ -110,23 +176,25 @@ class SifiBridge:
 
     active_device: str
 
-    def __init__(self, data_transport: str = "stdout", use_lsl: bool = False):
+    def __init__(
+        self, publishers: None | str | Iterable[str] = None, use_lsl: bool = False
+    ):
         """
         Create a SiFi Bridge instance. Currently, only standard input is supported to interact with SiFi Bridge.
 
-        The constructor first checks if `sifibridge` is present in the current working directory. 
-        If it is, it checks if its version is compatible with the Python package. 
+        The constructor first checks if `sifibridge` is present in the current working directory.
+        If it is, it checks if its version is compatible with the Python package.
         If they are incompatible OR `sifibridge` is not already in the directory, the latest compatible version is downloaded from the official Github repository.
         If they are compatible, no matter the patch version, the existing `sifibridge` is used.
-        
+
         For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help`
 
-        :param data_transport: Data transport. Can be any of {`"stdout"`, `"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`, `"file://data/root/directory/"`}.
-        :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to sifibridge's `lsl` REPL command for more information.
+        :param data_transport: Use additional publishers. Leave empty to only use stdout. Otherwise any combination of {`"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`, `"csv://data/root/directory/"`}.
+        :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to `sifibridge`'s `lsl` REPL command for more information.
         """
-        
+
         executable = "./sifibridge"
-        
+
         # Check if sifibridge in cwd
         try:
             cli_version = (
@@ -139,31 +207,36 @@ class SifiBridge:
             cli_version = "0.0.1"
         py_version = utils._get_package_version()
 
+        logging.debug(f"CLI version: {cli_version}, Python version: {py_version}")
+
         if not utils._are_compatible(cli_version, py_version):
             logging.info("Downloading latest compatible version of sifibridge.")
             executable = utils.get_sifi_bridge("./")
-        
+
         exec_command = [executable]
-        
-        if data_transport != "stdout":
-            output_option = data_transport.split("://")
-            exec_command.append(f"--{output_option[0]}-out")
-            exec_command.append(output_option[1])
-            
+
+        if publishers is not None:
+            if isinstance(publishers, str):
+                publishers = [publishers]
+            for publisher in publishers:
+                p, parg = publisher.split("://")
+                exec_command.append(f"--{p}-out")
+                exec_command.append(parg)
+
         if use_lsl:
             exec_command.append("--lsl")
-            
+
         logging.info(f"Launching executable: {' '.join(exec_command)}")
         self._bridge = sp.Popen(exec_command, stdin=sp.PIPE, stdout=sp.PIPE)
-            
-        self.active_device = self.show()["id"]
+
+        self.active_device = self.get_data()["new"]["active"]
 
     def show(self):
         """
         Get information about the current SiFi Bridge device.
         """
         self.__write("show")
-        return self.get_data_with_key("ble_power")
+        return self.get_data_with_key("show")["show"]
 
     def create_device(self, name: str, select: bool = True):
         """
@@ -181,8 +254,8 @@ class SifiBridge:
 
         old_active = self.active_device
         self.__write(f"new {name}")
-        resp = self.get_data_with_key("active")
-        self.active_device = resp["active"]
+        resp = self.get_data_with_key("new")
+        self.active_device = resp["new"]["active"]
         if not select:
             return self.select_device(old_active)
         return resp
@@ -196,8 +269,8 @@ class SifiBridge:
         :return: Response from SiFi Bridge
         """
         self.__write(f"select {name}")
-        resp = self.get_data_with_key("active")
-        self.active_device = resp["active"]
+        resp = self.get_data_with_key("select")
+        self.active_device = resp["select"]["active"]
         return resp
 
     def delete_device(self, name: str):
@@ -209,7 +282,7 @@ class SifiBridge:
         :return: Response from SiFi Bridge
         """
         self.__write(f"delete {name}")
-        return self.get_data_with_key("active")
+        return self.get_data_with_key("delete")["delete"]["active"]
 
     def list_devices(self, source: ListSources | str) -> list[str]:
         """
@@ -221,7 +294,7 @@ class SifiBridge:
             source = ListSources(source)
 
         self.__write(f"list {source.value}")
-        return self.get_data_with_key("found_devices")["found_devices"]
+        return self.get_data_with_key("list")["list"]["devices"]
 
     def connect(self, handle: DeviceType | str | None = None) -> bool:
         """
@@ -240,7 +313,7 @@ class SifiBridge:
             handle = handle.value
 
         self.__write(f"connect {handle if handle is not None else ''}")
-        ret = self.get_data_with_key("connected")["connected"]
+        ret = self.get_data_with_key("connect")["connect"]["connected"]
         if ret is False:
             logging.info(f"Could not connect to {handle}")
         return ret
@@ -252,7 +325,7 @@ class SifiBridge:
         :return: Connection status response
         """
         self.__write("disconnect")
-        ret = self.get_data_with_key("connected")
+        ret = self.get_data_with_key("disconnect")["disconnect"]["connected"]
         return ret
 
     def set_filters(self, enable: bool):
@@ -335,7 +408,7 @@ class SifiBridge:
             notch_freq = "on60"
         else:
             notch_freq = "off"
-            
+
         self.set_filters(True)
         self.__write(
             f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq}"
@@ -475,7 +548,7 @@ class SifiBridge:
         Start an acquisition.
 
         :return: True if command was sent successfully, False otherwise.
-        
+
         :raise ConnectionError: If unable to send the command, e.g. if disconnected.
 
         """
