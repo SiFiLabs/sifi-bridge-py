@@ -26,6 +26,7 @@ class PacketType(Enum):
 
     ECG = "ecg"
     EMG = "emg"
+    EMG_ARMBAND = "emg_armband"
     EDA = "eda"
     IMU = "imu"
     PPG = "ppg"
@@ -40,6 +41,7 @@ class SensorChannel(Enum):
 
     # Example
 
+    ```python
     >>> sb = SifiBridge()
     >>> sb.connect()
     >>> sb.start()
@@ -50,6 +52,7 @@ class SensorChannel(Enum):
     >>> qw = emg[SensorChannel.IMU.value[0]] # get first channel
     >>> print(len(qw), qw)
     8 [0.5427, 0.5423, 0.5426, 0.5424, 0.5424, 0.5428, 0.5424, 0.5422]
+    ```
     """
 
     ECG = "ecg"
@@ -74,9 +77,11 @@ class DeviceCommand(Enum):
 
     # Example
 
+    ```python
     >>> sb = SifiBridge()
     >>> sb.connect()
     >>> sb.send_command(DeviceCommand.OPEN_LED_1) # LED 1 is turned on
+    ```
     """
 
     START_ACQUISITION = "start-acquisition"
@@ -191,7 +196,7 @@ class SifiBridge:
 
         For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help`
 
-        :param data_transport: Use additional publishers. Leave empty to only use stdout. Otherwise any combination of {`"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`, `"csv://data/root/directory/"`}.
+        :param publishers: Use additional publishers. Leave empty to only use stdout. Otherwise any combination of {`"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`, `"csv://data/root/directory/"`}.
         :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to `sifibridge`'s `lsl` REPL command for more information.
         """
 
@@ -612,7 +617,7 @@ class SifiBridge:
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == "ecg":
+            if data["packet_type"] == PacketType.ECG.value:
                 return data
 
     def get_emg(self):
@@ -623,7 +628,10 @@ class SifiBridge:
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] in ["emg", "emg_armband"]:
+            if data["packet_type"] in (
+                PacketType.EMG.value,
+                PacketType.EMG_ARMBAND.value,
+            ):
                 return data
 
     def get_eda(self):
@@ -634,7 +642,7 @@ class SifiBridge:
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == "eda":
+            if data["packet_type"] == PacketType.EDA.value:
                 return data
 
     def get_imu(self):
@@ -645,7 +653,7 @@ class SifiBridge:
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == "imu":
+            if data["packet_type"] == PacketType.IMU.value:
                 return data
 
     def get_ppg(self):
@@ -656,7 +664,7 @@ class SifiBridge:
         """
         while True:
             data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == "ppg":
+            if data["packet_type"] == PacketType.PPG.value:
                 return data
 
     def get_temperature(self):
