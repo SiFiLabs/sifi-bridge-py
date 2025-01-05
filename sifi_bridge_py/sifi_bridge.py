@@ -1,5 +1,6 @@
 import subprocess as sp
 import json
+from time import sleep
 from typing import Iterable
 from enum import Enum
 
@@ -688,5 +689,5 @@ class SifiBridge:
         self._bridge.stdin.flush()
 
     def __del__(self):
-        self.__write("disconnect")
         self.__write("quit")
+        self._bridge.terminate()
