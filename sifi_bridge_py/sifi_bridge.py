@@ -2,9 +2,9 @@ import subprocess as sp
 import json
 from typing import Iterable
 from enum import Enum
+import select
 
 import logging
-
 from sifi_bridge_py import utils
 
 
@@ -234,7 +234,9 @@ class SifiBridge:
             exec_command.append("--lsl")
 
         logging.info(f"Launching executable: {' '.join(exec_command)}")
-        self._bridge = sp.Popen(exec_command, stdin=sp.PIPE, stdout=sp.PIPE)
+        self._bridge = sp.Popen(
+            exec_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE
+        )
 
         self.active_device = self.get_data()["new"]["active"]
 
@@ -296,11 +298,12 @@ class SifiBridge:
         List all devices found from a given `source`.
 
         :return: Response from SiFi Bridge
+        :raises ConnectionError: If Bluetooth is off.
         """
         if isinstance(source, str):
             source = ListSources(source)
-
         self.__write(f"list {source.value}")
+        self.__check_stderr_for_bluetooth_err()
         return self.get_data_with_key("list")["list"]["devices"]
 
     def connect(self, handle: DeviceType | str | None = None) -> bool:
@@ -314,12 +317,14 @@ class SifiBridge:
             - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
         :return: Connection status
+        :raises ConnectionError: If Bluetooth is off.
         """
 
         if isinstance(handle, DeviceType):
             handle = handle.value
 
         self.__write(f"connect {handle if handle is not None else ''}")
+        self.__check_stderr_for_bluetooth_err()
         ret = self.get_data_with_key("connect")["connect"]["connected"]
         if ret is False:
             logging.info(f"Could not connect to {handle}")
@@ -569,16 +574,19 @@ class SifiBridge:
         """
         return self.send_command(DeviceCommand.STOP_ACQUISITION)
 
-    def get_data(self) -> dict:
+    def get_data(self, timeout: float | None = None) -> dict:
         """
-        Wait for Bridge to return a packet. Blocking operation.
+        Wait for Bridge to return a packet.
+
+        :param timeout: Time in seconds to wait for a packet. If `None`, will block indefinitely.
 
         :return: Packet as a dictionary.
-        :raise
         """
-
-        packet = self._bridge.stdout.readline().decode()
-        ret = json.loads(packet)
+        ready_to_read, _, _ = select.select([self._bridge.stdout], [], [], timeout)
+        ret = {}
+        if self._bridge.stdout in ready_to_read:
+            packet = self._bridge.stdout.readline().decode()
+            ret = json.loads(packet)
         return ret
 
     def get_data_with_key(self, keys: str | Iterable[str]) -> dict:
@@ -678,6 +686,18 @@ class SifiBridge:
             if data["packet_type"] == PacketType.TEMPERATURE.value:
                 return data
 
+    def __check_stderr_for_bluetooth_err(self):
+        """Check if there is any error message from SiFi Bridge's stderr. If there is, assume it's a BLE error.
+
+        Raises:
+            ConnectionError: If BLE is off.
+        """
+        ready_to_read, _, _ = select.select([self._bridge.stderr], [], [], 0.1)
+
+        if self._bridge.stderr in ready_to_read:
+            logging.error(self._bridge.stderr.readline().decode())
+            raise ConnectionError("Bluetooth is off.")
+
     def __write(self, cmd: str):
         """Write some data to SiFi Bridge's stdin.
 
@@ -689,4 +709,4 @@ class SifiBridge:
 
     def __del__(self):
         self.__write("quit")
-        self._bridge.terminate()
+        self._bridge.wait()

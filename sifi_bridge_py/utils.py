@@ -8,7 +8,6 @@ from semantic_version import Version
 
 import numpy as np
 
-import logging
 
 def _get_package_version():
     """
@@ -22,33 +21,41 @@ def _get_package_version():
     """
     return metadata.version("sifi_bridge_py")
 
+
 def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
     """Check if two semantic verison-formatted strings are compatible (major and minor versions match).
 
     :return bool: True if compatible, False otherwise.
-        
+
     """
     if not isinstance(ver_1, Version):
         ver_1 = Version(ver_1)
     if not isinstance(ver_2, Version):
         ver_2 = Version(ver_2)
-    
+
     are_compatible = ver_1.major == ver_2.major and ver_1.minor == ver_2.minor
- 
+
     return are_compatible
-    
+
+
 def _fetch_releases() -> list[dict]:
-    """Fetch all SiFi Bridge releases from the official Github repository.
-    """
+    """Fetch all SiFi Bridge releases from the official Github repository."""
     return requests.get(
-            "https://api.github.com/repos/sifilabs/sifi-bridge-pub/releases",
-            timeout=5,
-        ).json()
-    
+        "https://api.github.com/repos/sifilabs/sifi-bridge-pub/releases",
+        timeout=5,
+    ).json()
+
+
 def _get_latest_matching_version(releases: list[dict]) -> Version:
     sbp_version = Version(_get_package_version())
-    versions = list(filter(lambda ver: _are_compatible(sbp_version, ver),[release["tag_name"] for release in releases]))
+    versions = list(
+        filter(
+            lambda ver: _are_compatible(sbp_version, ver),
+            [release["tag_name"] for release in releases],
+        )
+    )
     return max(versions)
+
 
 def _get_release_assets(releases, version) -> list[dict]:
     if not isinstance(version, str):
@@ -57,16 +64,18 @@ def _get_release_assets(releases, version) -> list[dict]:
     assets = releases[release_idx]["assets"]
     return assets
 
+
 def _get_matching_asset(assets: list[dict], architecture: str, platform: str) -> dict:
     arch = architecture.lower()
     platform = platform.lower()
-    
+
     for asset in assets:
         asset_name = asset["name"]
         if arch not in asset_name or platform not in asset_name:
             continue
         return asset
     raise ValueError(f"No asset found for {arch} on {platform}")
+
 
 def _download_and_extract_sifibridge(archive: dict, output_dir: str) -> str:
     r = requests.get(archive["browser_download_url"])
@@ -79,7 +88,7 @@ def _download_and_extract_sifibridge(archive: dict, output_dir: str) -> str:
     # TODO safety checks?
     shutil.unpack_archive(archive_name, "./")
     os.remove(archive_name)
-    
+
     # Remove zip/tar.gz extension
     extracted_dir_name = archive_name.replace(".zip", "").replace(".tar.gz", "")
     executable = archive["name"].split("-")[0]
@@ -87,13 +96,18 @@ def _download_and_extract_sifibridge(archive: dict, output_dir: str) -> str:
     for file in os.listdir(extracted_dir_name):
         if not file.startswith(executable):
             continue
-        executable_path = f"{output_dir}{file}" if output_dir.endswith("/") else f"{output_dir}/{file}"
+        executable_path = (
+            f"{output_dir}{file}"
+            if output_dir.endswith("/")
+            else f"{output_dir}/{file}"
+        )
         # Overwrite executable
         if file in os.listdir(output_dir):
             os.remove(executable_path)
         shutil.move(f"{extracted_dir_name}/{file}", f"{output_dir}/")
         shutil.rmtree(extracted_dir_name)
         return executable_path
+
 
 def get_sifi_bridge(output_dir: str):
     """
@@ -118,6 +132,7 @@ def get_sifi_bridge(output_dir: str):
     asset = _get_matching_asset(assets, arch, pltfm)
     exe = _download_and_extract_sifibridge(asset, output_dir)
     return exe
+
 
 def get_attitude_from_quats(qw, qx, qy, qz):
     """
