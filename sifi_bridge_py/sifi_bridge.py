@@ -351,35 +351,29 @@ class SifiBridge:
 
     def configure_sensors(
         self,
-        ecg: None | bool = None,
-        emg: None | bool = None,
-        eda: None | bool = None,
-        imu: None | bool = None,
-        ppg: None | bool = None,
+        ecg: bool = False,
+        emg: bool = False,
+        eda: bool = False,
+        imu: bool = False,
+        ppg: bool = False,
     ):
         """
         Configure the enabled sensors.
 
-        :param ecg: True to enable ECG, False to disable, None to leave unchanged
-        :param emg: True to enable EMG, False to disable, None to leave unchanged
-        :param eda: True to enable EDA, False to disable, None to leave unchanged
-        :param imu: True to enable IMU, False to disable, None to leave unchanged
-        :param ppg: True to enable PPG, False to disable, None to leave unchanged
+        :param ecg: True to enable ECG, False to disable
+        :param emg: True to enable EMG, False to disable
+        :param eda: True to enable EDA, False to disable
+        :param imu: True to enable IMU, False to disable
+        :param ppg: True to enable PPG, False to disable
 
         :return: Configuration response
         """
         cmd_parts = ["configure sensors"]
-
-        if ecg is not None:
-            cmd_parts.append(f"--ecg {'on' if ecg else 'off'}")
-        if emg is not None:
-            cmd_parts.append(f"--emg {'on' if emg else 'off'}")
-        if eda is not None:
-            cmd_parts.append(f"--eda {'on' if eda else 'off'}")
-        if imu is not None:
-            cmd_parts.append(f"--imu {'on' if imu else 'off'}")
-        if ppg is not None:
-            cmd_parts.append(f"--ppg {'on' if ppg else 'off'}")
+        cmd_parts.append(f"--ecg {'on' if ecg else 'off'}")
+        cmd_parts.append(f"--emg {'on' if emg else 'off'}")
+        cmd_parts.append(f"--eda {'on' if eda else 'off'}")
+        cmd_parts.append(f"--imu {'on' if imu else 'off'}")
+        cmd_parts.append(f"--ppg {'on' if ppg else 'off'}")
 
         self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")
@@ -414,76 +408,148 @@ class SifiBridge:
         self.__write(f"configure memory {memory_config.value}")
         return self.get_data_with_key("configure")
 
-    def configure_emg(
+    def configure_ecg(
         self,
-        bandpass_freqs: tuple = (20, 450),
-        notch_freq: int | None = 50,
-    ):
+        state: bool = True,
+        fs: int = 500,
+        dc_notch: bool = True,
+        mains_notch: None | int = 50,
+        bandpass: bool = True,
+        flo: float = 0,
+        fhi: float = 30,
+    ) -> dict:
         """
-        Configure EMG biochannel filters. Also calls `self.set_filters(True)`.
+        Configure ECG biochannel parameters.
 
-        :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
-        :param notch_freq: Mains notch filter frequency. Possible choices: {None, 50, 60} Hz or any other value to disable.
+        :param state: Enable/disable ECG sensor (True/False)
+        :param fs: Sampling rate in Hz (e.g., 250, 500, 1000)
+        :param dc_notch: Enable/disable DC offset removal filter
+        :param mains_notch: Mains frequency notch filter. Options: None (off), 50 (50 Hz), 60 (60 Hz)
+        :param bandpass: Enable/disable bandpass filter
+        :param flo: Lower cutoff frequency for bandpass filter (Hz)
+        :param fhi: Higher cutoff frequency for bandpass filter (Hz)
 
         :return: Configuration response
         """
-        if notch_freq == 50:
-            notch_freq = "on50"
-        elif notch_freq == 60:
-            notch_freq = "on60"
-        else:
-            notch_freq = "off"
+        cmd_parts = ["configure ecg"]
 
-        self.set_filters(True)
-        self.__write(
-            f"configure emg --bandpass on --flo {bandpass_freqs[0]} --fhi {bandpass_freqs[1]} --mains-notch {notch_freq}"
-        )
+        cmd_parts.append(f"--state {'on' if state else 'off'}")
+        cmd_parts.append(f"--fs {fs}")
+        cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
+        if mains_notch == 50:
+            cmd_parts.append("--mains-notch on50")
+        elif mains_notch == 60:
+            cmd_parts.append("--mains-notch on60")
+        else:
+            cmd_parts.append("--mains-notch off")
+        cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
+        cmd_parts.append(f"--flo {flo}")
+        cmd_parts.append(f"--fhi {fhi}")
+
+        self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")
 
-    def configure_ecg(self, bandpass_freqs: tuple = (0, 30)):
+    def configure_emg(
+        self,
+        state: bool = True,
+        fs: int = 2000,
+        dc_notch: bool = True,
+        mains_notch: None | int = 50,
+        bandpass: bool = True,
+        flo: float = 20,
+        fhi: float = 450,
+    ) -> dict:
         """
-        Configure ECG biochannel filters. Also calls `self.set_filters(True)`.
+        Configure EMG biochannel parameters.
 
-        :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
+        :param state: Enable/disable EMG sensor (True/False)
+        :param fs: Sampling rate in Hz (e.g., 1000, 2000)
+        :param dc_notch: Enable/disable DC offset removal filter
+        :param mains_notch: Mains frequency notch filter. Options: None (Off), 50 (50 Hz), 60 (60 Hz)
+        :param bandpass: Enable/disable bandpass filter
+        :param flo: Lower cutoff frequency for bandpass filter (Hz)
+        :param fhi: Higher cutoff frequency for bandpass filter (Hz)
 
         :return: Configuration response
         """
-        self.set_filters(True)
-        self.__write(
-            f"configure ecg --bandpass on --flo {bandpass_freqs[0]} --fhi {bandpass_freqs[1]}"
-        )
+        cmd_parts = ["configure emg"]
+
+        cmd_parts.append(f"--state {'on' if state else 'off'}")
+        cmd_parts.append(f"--fs {fs}")
+        cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
+        if mains_notch == 50:
+            cmd_parts.append("--mains-notch on50")
+        elif mains_notch == 60:
+            cmd_parts.append("--mains-notch on60")
+        else:
+            cmd_parts.append("--mains-notch off")
+        cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
+        cmd_parts.append(f"--flo {flo}")
+        cmd_parts.append(f"--fhi {fhi}")
+
+        self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")
 
     def configure_eda(
         self,
-        bandpass_freqs: tuple = (0, 5),
-        signal_freq: int = 0,
+        state: bool = True,
+        fs: int = 50,
+        dc_notch: bool = True,
+        mains_notch: int | None = 50,
+        bandpass: bool = True,
+        flo: float = 0,
+        fhi: float = 5,
+        freq: int = 0,
     ):
         """
-        Configure EDA biochannel. Also calls `self.set_filters(True)`.
+        Configure EDA biochannel parameters.
 
-        :param bandpass_freqs: Tuple of lower and upper cutoff frequencies for the bandpass filter.
-        :param signal_freq: frequency of EDA excitation signal. 0 for DC.
+        :param state: Enable/disable EDA sensor (True/False)
+        :param fs: Sampling rate in Hz (e.g., 50, 100)
+        :param dc_notch: Enable/disable DC offset removal filter
+        :param mains_notch: Mains frequency notch filter. Options: None (Off), 50 (50 Hz), 60 (60 Hz)
+        :param bandpass: Enable/disable bandpass filter
+        :param flo: Lower cutoff frequency for bandpass filter (Hz)
+        :param fhi: Higher cutoff frequency for bandpass filter (Hz)
+        :param freq: EDA excitation signal frequency (Hz). 0 for DC measurement.
 
         :return: Configuration response
         """
-        self.set_filters(True)
-        self.__write(
-            f"configure eda --bandpass on --flo {bandpass_freqs[0]} --fhi {bandpass_freqs[1]} --freq {signal_freq}"
-        )
+        cmd_parts = ["configure eda"]
+
+        cmd_parts.append(f"--state {'on' if state else 'off'}")
+        cmd_parts.append(f"--fs {fs}")
+        cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
+        if mains_notch == 50:
+            cmd_parts.append("--mains-notch on50")
+        elif mains_notch == 60:
+            cmd_parts.append("--mains-notch on60")
+        else:
+            cmd_parts.append("--mains-notch off")
+        cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
+        cmd_parts.append(f"--flo {flo}")
+        cmd_parts.append(f"--fhi {fhi}")
+        cmd_parts.append(f"--freq {freq}")
+
+        self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")
 
     def configure_ppg(
         self,
+        state: bool = True,
+        fs: int = 100,
         ir: int = 9,
         red: int = 9,
         green: int = 9,
         blue: int = 9,
         sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
+        avg: int = 1,
     ):
         """
         Configure PPG biochannel. Internally calls `self.set_filters(True)`.
 
+        :param state: enable PPG sensor
+        :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
         :param ir: current of IR LED in mA (1-50)
         :param r: current of R LED in mA (1-50)
         :param g: current of G LED in mA (1-50)
@@ -495,16 +561,54 @@ class SifiBridge:
         if isinstance(sens, str):
             sens = PpgSensitivity(sens)
 
-        self.__write(
-            f"configure ppg --iir {ir} --ired {red} --igreen {green} --iblue {blue} --sens {sens.value}"
-        )
+        cmd_parts = ["configure ppg"]
+
+        cmd_parts.append(f"--state {'on' if state else 'off'}")
+        cmd_parts.append(f"--fs {fs}")
+        cmd_parts.append(f"--iir {ir}")
+        cmd_parts.append(f"--ired {red}")
+        cmd_parts.append(f"--igreen {green}")
+        cmd_parts.append(f"--iblue {blue}")
+        cmd_parts.append(f"--sens {sens.value}")
+        cmd_parts.append(f"--avg {avg}")
+
+        self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")
 
-    def configure_sampling_freqs(self, ecg=500, emg=2000, eda=40, imu=50, ppg=50):
+    def configure_imu(
+        self,
+        state: bool = True,
+        fs: int = 100,
+        accel_range: int = 2,
+        gyro_range: int = 16,
+    ):
+        """
+        Configure PPG biochannel. Internally calls `self.set_filters(True)`.
+
+        :param state: enable PPG sensor
+        :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
+        :param ir: current of IR LED in mA (1-50)
+        :param r: current of R LED in mA (1-50)
+        :param g: current of G LED in mA (1-50)
+        :param b: current of B LED in mA (1-50)
+        :param sens: light sensor sensitivity. See `PpgSensitivity` for more information.
+
+        :return: Configuration response
+        """
+
+        cmd_parts = ["configure imu"]
+
+        cmd_parts.append(f"--state {'on' if state else 'off'}")
+        cmd_parts.append(f"--fs {fs}")
+        cmd_parts.append(f"--accel-range {accel_range}")
+        cmd_parts.append(f"--gyro-range {gyro_range}")
+
+        self.__write(" ".join(cmd_parts))
+        return self.get_data_with_key("configure")
+
+    def configure_sampling_freqs(self, ecg=500, emg=2000, eda=50, imu=100, ppg=100):
         """
         Configure the sampling frequencies [Hz] of biosignal acquisition.
-
-        NOTE: Currently unused.
 
         :return: Configuration response
         """
