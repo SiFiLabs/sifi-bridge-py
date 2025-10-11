@@ -1,6 +1,6 @@
 import subprocess as sp
 import json
-from typing import Iterable
+from collections.abc import Iterable
 from enum import Enum
 import select
 
@@ -33,6 +33,7 @@ class PacketType(Enum):
     STATUS = "status"
     MEMORY = "memory"
     TEMPERATURE = "temperature"
+    LOW_LATENCY = "low_latency"
 
 
 class SensorChannel(Enum):
@@ -80,7 +81,7 @@ class DeviceCommand(Enum):
     ```python
     >>> sb = SifiBridge()
     >>> sb.connect()
-    >>> sb.send_command(DeviceCommand.OPEN_LED_1) # LED 1 is turned on
+    >>> sb.send_command(DeviceCommand.OPEN_LED_BLUE) # Blue LED is turned on
     ```
     """
 
@@ -91,10 +92,10 @@ class DeviceCommand(Enum):
     ERASE_ONBOARD_MEMORY = "erase-memory"
     DOWNLOAD_ONBOARD_MEMORY = "download-memory"
     START_STATUS_UPDATE = "start-status-update"
-    OPEN_LED_1 = "open-led1"
-    OPEN_LED_2 = "open-led2"
-    CLOSE_LED_1 = "close-led1"
-    CLOSE_LED_2 = "close-led2"
+    OPEN_LED_BLUE = "open-led-blue"
+    OPEN_LED_GREEN = "open-led-green"
+    CLOSE_LED_BLUE = "close-led-blue"
+    CLOSE_LED_GREEN = "close-led-green"
     START_MOTOR = "start-motor"
     STOP_MOTOR = "stop-motor"
     POWER_OFF = "power-off"
@@ -116,7 +117,6 @@ class DeviceType(Enum):
     BIOPOINT_V1_1 = "BioPoint_v1_1"
     BIOPOINT_V1_2 = "BioPoint_v1_2"
     BIOPOINT_V1_3 = "BioPoint_v1_3"
-    BIOARMBAND = "BioArmband"
     SIFIBAND = "SiFiBand"
 
 
@@ -176,7 +176,7 @@ class SifiBridge:
     Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on I/O.
     """
 
-    _bridge: sp.Popen
+    _bridge: sp.Popen[bytes]
     """
     SiFi Bridge executable instance.
     """
@@ -368,7 +368,9 @@ class SifiBridge:
         imu = "on" if imu else "off"
         ppg = "on" if ppg else "off"
 
-        self.__write(f"configure channels {ecg} {emg} {eda} {imu} {ppg}")
+        self.__write(
+            f"configure sensors --ecg {ecg} --emg {emg} --eda {eda} --imu {imu} --ppg {ppg}"
+        )
         return self.get_data_with_key("configure")
 
     def set_ble_power(self, power: BleTxPower | str):
@@ -423,7 +425,7 @@ class SifiBridge:
 
         self.set_filters(True)
         self.__write(
-            f"configure emg {bandpass_freqs[0]} {bandpass_freqs[1]} {notch_freq}"
+            f"configure emg --bandpass on --flo {bandpass_freqs[0]} --fhi {bandpass_freqs[1]} --mains-notch {notch_freq}"
         )
         return self.get_data_with_key("configure")
 
@@ -436,7 +438,9 @@ class SifiBridge:
         :return: Configuration response
         """
         self.set_filters(True)
-        self.__write(f"configure ecg {bandpass_freqs[0]} {bandpass_freqs[1]}")
+        self.__write(
+            f"configure ecg --bandpass on --flo {bandpass_freqs[0]} --fhi {bandpass_freqs[1]}"
+        )
         return self.get_data_with_key("configure")
 
     def configure_eda(
@@ -454,7 +458,7 @@ class SifiBridge:
         """
         self.set_filters(True)
         self.__write(
-            f"configure eda {bandpass_freqs[0]} {bandpass_freqs[1]} {signal_freq}"
+            f"configure eda --bandpass on --flo {bandpass_freqs[0]} --fhi {bandpass_freqs[1]} --freq {signal_freq}"
         )
         return self.get_data_with_key("configure")
 
@@ -480,7 +484,9 @@ class SifiBridge:
         if isinstance(sens, str):
             sens = PpgSensitivity(sens)
 
-        self.__write(f"configure ppg {ir} {red} {green} {blue} {sens.value}")
+        self.__write(
+            f"configure ppg --iir {ir} --ired {red} --igreen {green} --iblue {blue} --sens {sens.value}"
+        )
         return self.get_data_with_key("configure")
 
     def configure_sampling_freqs(self, ecg=500, emg=2000, eda=40, imu=50, ppg=50):
@@ -491,7 +497,9 @@ class SifiBridge:
 
         :return: Configuration response
         """
-        self.__write(f"configure sampling-rates {ecg} {emg} {eda} {imu} {ppg}")
+        self.__write(
+            f"configure sampling-rates --ecg {ecg} --emg {emg} --eda {eda} --imu {imu} --ppg {ppg}"
+        )
         return self.get_data_with_key("configure")
 
     def set_low_latency_mode(self, on: bool):
@@ -506,6 +514,45 @@ class SifiBridge:
         """
         streaming = "on" if on else "off"
         self.__write(f"configure low-latency-mode {streaming}")
+        return self.get_data_with_key("configure")
+
+    def set_stealth_mode(self, enable: bool):
+        """
+        Enable or disable stealth mode. When enabled, device LEDs are disabled during acquisition.
+
+        Useful for:
+        - Sleep studies: Minimize light disturbance
+        - Covert monitoring: Reduce visual indicators
+        - Power saving: Disable LEDs to extend battery life
+
+        :param enable: True to enable stealth mode, False to disable
+
+        :return: Configuration response
+        """
+        state = "on" if enable else "off"
+        self.__write(f"configure stealth-mode {state}")
+        return self.get_data_with_key("configure")
+
+    def set_motor_intensity(self, level: int):
+        """
+        Set the vibration motor intensity level.
+
+        Useful for:
+        - Haptic feedback in biofeedback applications
+        - Event markers in experiments
+        - Alert notifications for threshold crossing
+
+        :param level: Intensity level (0-10), where 0 is off and 10 is maximum intensity
+
+        :return: Configuration response
+        :raises ValueError: If level is not between 0 and 10
+        """
+        if not 0 <= level <= 10:
+            raise ValueError(
+                f"Motor intensity level must be between 0 and 10, got {level}"
+            )
+
+        self.__write(f"configure motor-intensity {level}")
         return self.get_data_with_key("configure")
 
     def start_memory_download(self) -> int:
