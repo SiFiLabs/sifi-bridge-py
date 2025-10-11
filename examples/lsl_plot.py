@@ -125,7 +125,7 @@ def main_sifibridge():
     while not sb.connect():
         print("Waiting for connection...")
     print("Sifi Bridge connected!")
-    print(sb.set_channels(True, True, True, True, True))
+    print(sb.configure_sensors(True, True, True, True, True))
     print(sb.start())
     while True:
         sb.get_data()
@@ -157,7 +157,6 @@ def main_pylsl(streams_to_use: list | None = None):
             info.nominal_srate() != pylsl.IRREGULAR_RATE
             and info.channel_format() != pylsl.cf_string
         ):
-
             if (
                 streams_to_use is not None
                 and info.name().split(":")[-1] not in streams_to_use

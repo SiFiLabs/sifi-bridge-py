@@ -7,9 +7,11 @@ from sifi_bridge_py.sifi_bridge import DeviceType
 
 def main():
     sb = sbp.SifiBridge()
-    while not sb.connect(DeviceType.BIOPOINT_V1_3):
+    while not sb.connect():
         continue
 
+    print(sb.configure_sensors(ecg=True))
+    exit()
     kb = sb.start_memory_download()
     print(f"Start memory download for {kb} KB")
 
@@ -18,17 +20,20 @@ def main():
     t0 = time.time()
     while True:
         data = sb.get_data()
+        # print(data)
         pkt_number += 1
-        if data["status"] == "MemoryDownloadCompleted":
+        if data["status"] == "memory_download_completed":
             break
         elif data["packet_type"] == "ecg":
             ecg_data.extend(data["data"]["ecg"])
     dt = time.time() - t0
-    print(f"Download throughput: {pkt_number*227 / (1000*dt):.2f} kBps")
+    print(
+        f"Downloaded {(pkt_number - 1) * 227 / 1000:.3f} kB ({pkt_number * 227 / (1000 * dt):.2f} kBps)"
+    )
     print(f"Downloaded {len(ecg_data)} samples of ECG in {dt:.2f} seconds")
+    sb.disconnect()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
+    logging.basicConfig(level=logging.DEBUG)
     main()

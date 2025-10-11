@@ -10,7 +10,7 @@ def main():
     sb = SifiBridge()
     while not sb.connect(device_type):
         continue
-    sb.set_channels(emg=True)
+    sb.configure_sensors(emg=True)
     sb.configure_emg((20, 450), 60)
     sb.start()
 

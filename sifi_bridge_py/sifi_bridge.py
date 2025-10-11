@@ -349,28 +349,39 @@ class SifiBridge:
         self.__write(f"configure filtering {'on' if enable else 'off'}")
         return self.get_data_with_key("configure")
 
-    def set_channels(
+    def configure_sensors(
         self,
-        ecg: bool = False,
-        emg: bool = False,
-        eda: bool = False,
-        imu: bool = False,
-        ppg: bool = False,
+        ecg: None | bool = None,
+        emg: None | bool = None,
+        eda: None | bool = None,
+        imu: None | bool = None,
+        ppg: None | bool = None,
     ):
         """
-        Select which biochannels to enable.
+        Configure the enabled sensors.
+
+        :param ecg: True to enable ECG, False to disable, None to leave unchanged
+        :param emg: True to enable EMG, False to disable, None to leave unchanged
+        :param eda: True to enable EDA, False to disable, None to leave unchanged
+        :param imu: True to enable IMU, False to disable, None to leave unchanged
+        :param ppg: True to enable PPG, False to disable, None to leave unchanged
 
         :return: Configuration response
         """
-        ecg = "on" if ecg else "off"
-        emg = "on" if emg else "off"
-        eda = "on" if eda else "off"
-        imu = "on" if imu else "off"
-        ppg = "on" if ppg else "off"
+        cmd_parts = ["configure sensors"]
 
-        self.__write(
-            f"configure sensors --ecg {ecg} --emg {emg} --eda {eda} --imu {imu} --ppg {ppg}"
-        )
+        if ecg is not None:
+            cmd_parts.append(f"--ecg {'on' if ecg else 'off'}")
+        if emg is not None:
+            cmd_parts.append(f"--emg {'on' if emg else 'off'}")
+        if eda is not None:
+            cmd_parts.append(f"--eda {'on' if eda else 'off'}")
+        if imu is not None:
+            cmd_parts.append(f"--imu {'on' if imu else 'off'}")
+        if ppg is not None:
+            cmd_parts.append(f"--ppg {'on' if ppg else 'off'}")
+
+        self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")
 
     def set_ble_power(self, power: BleTxPower | str):
