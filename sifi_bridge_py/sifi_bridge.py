@@ -81,7 +81,7 @@ class DeviceCommand(Enum):
     ```python
     >>> sb = SifiBridge()
     >>> sb.connect()
-    >>> sb.send_command(DeviceCommand.OPEN_LED_BLUE) # Blue LED is turned on
+    >>> sb.send_command(DeviceCommand.OPEN_LED_1) # LED 1 is turned on
     ```
     """
 
@@ -92,10 +92,10 @@ class DeviceCommand(Enum):
     ERASE_ONBOARD_MEMORY = "erase-memory"
     DOWNLOAD_ONBOARD_MEMORY = "download-memory"
     START_STATUS_UPDATE = "start-status-update"
-    OPEN_LED_BLUE = "open-led-blue"
-    OPEN_LED_GREEN = "open-led-green"
-    CLOSE_LED_BLUE = "close-led-blue"
-    CLOSE_LED_GREEN = "close-led-green"
+    OPEN_LED_1 = "open-led1"
+    OPEN_LED_2 = "open-led2"
+    CLOSE_LED_1 = "close-led1"
+    CLOSE_LED_2 = "close-led2"
     START_MOTOR = "start-motor"
     STOP_MOTOR = "stop-motor"
     POWER_OFF = "power-off"
@@ -134,13 +134,14 @@ class BleTxPower(Enum):
 
 class MemoryMode(Enum):
     """
-    Sets how the device should deal with data storage.
+    Sets how the device stores the data.
 
     - `STREAMING` streams data to the host computer via BLE
     - `DEVICE` saves the data stream to on-board flash
     - `BOTH` does both
 
-    **NOTE**: BioArmband does not support on-board memory (`DEVICE` variant).
+    **NOTE**: SiFiBand does not support on-board memory,
+    so this parameter is simply ignored.
     """
 
     STREAMING = "streaming"
@@ -342,7 +343,7 @@ class SifiBridge:
 
     def set_filters(self, enable: bool):
         """
-        Set state of onboard filtering for all biochannels.
+        Set state of onboard filtering for all sensors.
 
         :return: Configuration response
         """
@@ -419,7 +420,7 @@ class SifiBridge:
         fhi: float = 30,
     ) -> dict:
         """
-        Configure ECG biochannel parameters.
+        Configure ECG sensor.
 
         :param state: Enable/disable ECG sensor (True/False)
         :param fs: Sampling rate in Hz (e.g., 250, 500, 1000)
@@ -460,7 +461,7 @@ class SifiBridge:
         fhi: float = 450,
     ) -> dict:
         """
-        Configure EMG biochannel parameters.
+        Configure EMG sensor.
 
         :param state: Enable/disable EMG sensor (True/False)
         :param fs: Sampling rate in Hz (e.g., 1000, 2000)
@@ -500,18 +501,19 @@ class SifiBridge:
         flo: float = 0,
         fhi: float = 5,
         freq: int = 0,
-    ):
+    ) -> dict:
         """
-        Configure EDA biochannel parameters.
+        Configure EDA/BIOZ sensor. **Warning**: Enabling BIOZ and ECG/EMG at the same time
+        is not recommended as it may cause interference and degrade the quality of ECG/EMG data.
 
-        :param state: Enable/disable EDA sensor (True/False)
-        :param fs: Sampling rate in Hz (e.g., 50, 100)
-        :param dc_notch: Enable/disable DC offset removal filter
+        :param state: Enable/disable EDA sensor
+        :param fs: Sampling rate in Hz (e.g., 50, 100
+        :param dc_notch: Set DC offset removal filter
         :param mains_notch: Mains frequency notch filter. Options: None (Off), 50 (50 Hz), 60 (60 Hz)
         :param bandpass: Enable/disable bandpass filter
         :param flo: Lower cutoff frequency for bandpass filter (Hz)
         :param fhi: Higher cutoff frequency for bandpass filter (Hz)
-        :param freq: EDA excitation signal frequency (Hz). 0 for DC measurement.
+        :param freq: EDA/BIOZ excitation signal frequency (Hz). 0 for DC measurement
 
         :return: Configuration response
         """
@@ -544,9 +546,9 @@ class SifiBridge:
         blue: int = 9,
         sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
         avg: int = 1,
-    ):
+    ) -> dict:
         """
-        Configure PPG biochannel. Internally calls `self.set_filters(True)`.
+        Configure PPG sensor.
 
         :param state: enable PPG sensor
         :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
@@ -554,7 +556,8 @@ class SifiBridge:
         :param r: current of R LED in mA (1-50)
         :param g: current of G LED in mA (1-50)
         :param b: current of B LED in mA (1-50)
-        :param sens: light sensor sensitivity. See `PpgSensitivity` for more information.
+        :param sens: light sensor sensitivity. See `PpgSensitivity` for more information
+        :param avg: signal averaging factor for a smoother but less responsive signal
 
         :return: Configuration response
         """
@@ -581,11 +584,11 @@ class SifiBridge:
         fs: int = 100,
         accel_range: int = 2,
         gyro_range: int = 16,
-    ):
+    ) -> dict:
         """
-        Configure PPG biochannel. Internally calls `self.set_filters(True)`.
+        Configure IMU sensor.
 
-        :param state: enable PPG sensor
+        :param state: enable IMU sensor
         :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
         :param ir: current of IR LED in mA (1-50)
         :param r: current of R LED in mA (1-50)
@@ -600,7 +603,7 @@ class SifiBridge:
 
         cmd_parts.append(f"--state {'on' if state else 'off'}")
         cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--accel-range {accel_range}")
+        cmd_parts.append(f"--acc-range {accel_range}")
         cmd_parts.append(f"--gyro-range {gyro_range}")
 
         self.__write(" ".join(cmd_parts))
@@ -623,7 +626,7 @@ class SifiBridge:
 
         **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly if you need to use this feature.
 
-        :param on: True to use low latency mode, in which packets are sent much faster with data from every biochannels as it comes in. False to use the conventional 1 biosignal-batch-per-packet (default)
+        :param on: True to use low latency mode, in which packets are sent much faster with data from every sensor as it comes in. False to use the conventional 1 biosignal-batch-per-packet (default)
 
         :return: Configuration response
         """
