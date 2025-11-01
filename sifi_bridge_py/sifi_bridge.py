@@ -809,7 +809,7 @@ class SifiBridge:
 
     def get_ecg(self):
         """
-        Get ECG data.
+        Wait for an ECG packet.
 
         :return: ECG data packet as a dictionary.
         """
@@ -820,7 +820,7 @@ class SifiBridge:
 
     def get_emg(self):
         """
-        Get EMG data.
+        Wait for an EMG packet.
 
         :return: EMG data packet as a dictionary.
         """
@@ -834,7 +834,7 @@ class SifiBridge:
 
     def get_eda(self):
         """
-        Get EDA data.
+        Wait for an EDA packet.
 
         :return: EDA data packet as a dictionary.
         """
@@ -845,7 +845,7 @@ class SifiBridge:
 
     def get_imu(self):
         """
-        Get IMU data.
+        Wait for an IMU packet.
 
         :return: IMU data packet as a dictionary.
         """
@@ -856,7 +856,7 @@ class SifiBridge:
 
     def get_ppg(self):
         """
-        Get PPG data.
+        Wait for a PPG packet.
 
         :return: PPG data packet as a dictionary.
         """
@@ -867,7 +867,7 @@ class SifiBridge:
 
     def get_temperature(self):
         """
-        Get temperature data.
+        Wait for a temperature packet.
 
         :return: Temperature data packet as a dictionary.
         """
@@ -876,7 +876,13 @@ class SifiBridge:
             if data["packet_type"] == PacketType.TEMPERATURE.value:
                 return data
 
-    def is_memory_download_finished(self, packet: dict) -> bool:
+    def is_memory_download_completed(self, packet: dict) -> bool:
+        """
+        Helper function to check if `packet` indicates that memory download is finished, i.e., `packet["status"] == "memory_download_completed"`.
+
+
+        :return: True if memory download is finished, False otherwise.
+        """
         if (
             packet["packet_type"] == PacketType.MEMORY.value
             and packet["status"] == PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value
