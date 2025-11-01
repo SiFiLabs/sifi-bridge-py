@@ -11,7 +11,7 @@ def main():
         continue
 
     print(sb.configure_sensors(ecg=True))
-    exit()
+
     kb = sb.start_memory_download()
     print(f"Start memory download for {kb} KB")
 
@@ -22,7 +22,7 @@ def main():
         data = sb.get_data()
         # print(data)
         pkt_number += 1
-        if data["status"] == "memory_download_completed":
+        if sb.is_memory_download_finished(data):
             break
         elif data["packet_type"] == "ecg":
             ecg_data.extend(data["data"]["ecg"])
