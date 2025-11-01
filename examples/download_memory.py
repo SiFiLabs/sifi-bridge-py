@@ -2,8 +2,6 @@ import sifi_bridge_py as sbp
 import logging
 import time
 
-from sifi_bridge_py.sifi_bridge import DeviceType
-
 
 def main():
     sb = sbp.SifiBridge()
@@ -22,7 +20,7 @@ def main():
         data = sb.get_data()
         # print(data)
         pkt_number += 1
-        if sb.is_memory_download_finished(data):
+        if sb.is_memory_download_completed(data):
             break
         elif data["packet_type"] == "ecg":
             ecg_data.extend(data["data"]["ecg"])
