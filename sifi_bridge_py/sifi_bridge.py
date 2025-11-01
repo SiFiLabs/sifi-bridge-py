@@ -36,6 +36,30 @@ class PacketType(Enum):
     LOW_LATENCY = "low_latency"
 
 
+class PacketStatus(Enum):
+    """
+    Data packet statuses.
+
+    # Example
+
+    ```python
+    >>> sb = SifiBridge()
+    >>> sb.connect()
+    >>> sb.start()
+    >>> packet = sb.get_ecg()
+    >>> print(packet["status"] == PacketStatus.OK.value
+    True
+    ```
+    """
+
+    OK = "ok"
+    LOST_DATA = "lost_data"
+    RECORDING = "recording"
+    MEMORY_DOWNLOAD_COMPLETED = "memory_download_completed"
+    MEMORY_ERASED = "memory_erased"
+    INVALID = "invalid"
+
+
 class SensorChannel(Enum):
     """
     Sensor channel names as returned by `sifibridge`.
@@ -850,6 +874,15 @@ class SifiBridge:
             data = self.get_data_with_key(["packet_type"])
             if data["packet_type"] == PacketType.TEMPERATURE.value:
                 return data
+
+    def is_memory_download_finished(self, packet: dict) -> bool:
+        if (
+            packet["packet_type"] == PacketType.MEMORY.value
+            and packet["status"] == PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value
+        ):
+            return True
+        else:
+            return False
 
     def __check_stderr_for_bluetooth_err(self):
         """Check if there is any error message from SiFi Bridge's stderr. If there is, assume it's a BLE error.
