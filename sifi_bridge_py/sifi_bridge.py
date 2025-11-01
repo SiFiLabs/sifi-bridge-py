@@ -33,6 +33,7 @@ class PacketType(Enum):
     STATUS = "status"
     MEMORY = "memory"
     TEMPERATURE = "temperature"
+    START_TIME = "start_time"
     LOW_LATENCY = "low_latency"
 
 
@@ -684,14 +685,14 @@ class SifiBridge:
         - Event markers in experiments
         - Alert notifications for threshold crossing
 
-        :param level: Intensity level (0-10), where 0 is off and 10 is maximum intensity
+        :param level: Intensity level (1-10), where 10 is maximum intensity
 
         :return: Configuration response
-        :raises ValueError: If level is not between 0 and 10
+        :raises ValueError: If level is not between 1 and 10
         """
-        if not 0 <= level <= 10:
+        if not 1 <= level <= 10:
             raise ValueError(
-                f"Motor intensity level must be between 0 and 10, got {level}"
+                f"Motor intensity level must be between 1 and 10, got {level}"
             )
 
         self.__write(f"configure motor-intensity {level}")
