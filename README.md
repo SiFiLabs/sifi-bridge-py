@@ -10,7 +10,7 @@ The Python wrapper opens the CLI tool in a subprocess. Thus, it is highly recomm
 
 ## Documentation
 
-Inline documentation is provided. Sphinx API documentation will be coming eventually.
+Inline documentation is provided.
 
 ## Examples
 
@@ -19,6 +19,7 @@ Examples are available in the `examples/` directory of this project.
 ## Tests
 
 Tests are located under `tests/`. They can be ran with: `python -m unittest -v` from the root of the project's directory.
+
 ## Installing
 
 `pip install sifi_bridge_py` should work for most use cases.
@@ -26,6 +27,10 @@ Tests are located under `tests/`. They can be ran with: `python -m unittest -v` 
 ## Versioning
 
 The wrapper is updated for every SiFi Bridge version. Major and minor versions will always be kept in sync, while the patch version will vary for project-specific bug fixes.
+
+## Local development
+
+`pip install path/to/sifi-bridge-py/`
 
 ## Deployment
 
