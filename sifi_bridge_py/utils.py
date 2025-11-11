@@ -14,11 +14,13 @@ def _get_package_version():
     """
     Get the version of the `sifi_bridge_py` package.
 
-    The SiFi Bridge utilities follow semantic versioning.
+    The SiFi Bridge CLI follows SemVer (e.g., "2.0.0-beta.1"), while the Python
+    package follows PEP 440 (e.g., "2.0.0b1"). Both use semantic versioning principles.
 
-    Consequently, the CLI and the Python package should always have the same major and minor versions to ensure compatibility.
+    The CLI and the Python package should always have the same major and minor
+    versions to ensure compatibility.
 
-    :return str: Version string.
+    :return str: Version string in PEP 440 format (e.g., "2.0.0b1").
     """
     return metadata.version("sifi_bridge_py")
 
@@ -32,6 +34,7 @@ def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
     :return bool: True if compatible, False otherwise.
 
     """
+
     def parse_version(ver):
         """Parse version with fallback for non-standard formats."""
         if isinstance(ver, Version):
@@ -46,7 +49,7 @@ def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
             pass
 
         # Fallback: try stripping common prefixes like 'v'
-        if ver_str.startswith('v') or ver_str.startswith('V'):
+        if ver_str.startswith("v") or ver_str.startswith("V"):
             try:
                 return Version(ver_str[1:])
             except Exception:
@@ -54,7 +57,7 @@ def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
 
         # Fallback: manual parsing for major.minor extraction
         # Handle edge cases like: "v1.2.3-beta.1" after normalization fails
-        match = re.match(r'^[vV]?(\d+)\.(\d+)', ver_str)
+        match = re.match(r"^[vV]?(\d+)\.(\d+)", ver_str)
         if match:
             major, minor = int(match.group(1)), int(match.group(2))
             # Create a minimal Version object using just major.minor.0
@@ -82,24 +85,30 @@ def _fetch_releases() -> list[dict]:
     ).json()
 
 
-def _get_latest_matching_version(releases: list[dict]) -> Version:
-    """Get the latest release version compatible with the current package version.
+def _get_latest_matching_version(releases: list[dict]) -> str:
+    """Get the latest release tag compatible with the current package version.
+
+    The SiFi Bridge CLI uses SemVer (e.g., "v2.0.0-beta.1"), while the Python
+    package uses PEP 440 (e.g., "2.0.0b1"). This function handles the conversion
+    and returns the original tag name for use with GitHub releases.
 
     :param releases: List of release dictionaries from GitHub API
-    :return: The latest compatible Version object
+    :return: The tag name of the latest compatible release (e.g., "v2.0.0-beta.1")
     """
     sbp_version = Version(_get_package_version())
 
     # Parse all tag names and filter for compatible versions
+    # Store tuples of (Version object, original tag name)
     compatible_versions = []
     for release in releases:
         tag = release["tag_name"]
         try:
-            # Parse the tag into a Version object
+            # Check if this tag is compatible with our package version
             if _are_compatible(sbp_version, tag):
                 # Strip 'v' prefix if present for parsing
-                version_str = tag[1:] if tag.startswith('v') else tag
-                compatible_versions.append(Version(version_str))
+                version_str = tag[1:] if tag.startswith("v") else tag
+                parsed_version = Version(version_str)
+                compatible_versions.append((parsed_version, tag))
         except Exception:
             # Skip releases with unparseable version tags
             continue
@@ -107,15 +116,24 @@ def _get_latest_matching_version(releases: list[dict]) -> Version:
     if not compatible_versions:
         raise ValueError(f"No compatible versions found for {sbp_version}")
 
-    return max(compatible_versions)
+    # Find the latest version and return its original tag name
+    latest = max(compatible_versions, key=lambda x: x[0])
+    return latest[1]  # Return the original tag name
 
 
-def _get_release_assets(releases, version) -> list[dict]:
-    if not isinstance(version, str):
-        version = str(version)
-    release_idx = [release["tag_name"] for release in releases].index(version)
-    assets = releases[release_idx]["assets"]
-    return assets
+def _get_release_assets(releases: list[dict], tag_name: str) -> list[dict]:
+    """Get the assets for a specific release by its tag name.
+
+    :param releases: List of release dictionaries from GitHub API
+    :param tag_name: The exact tag name from GitHub (e.g., "v2.0.0-beta.1")
+    :return: List of asset dictionaries for the release
+    :raises ValueError: If the tag name is not found in releases
+    """
+    for release in releases:
+        if release["tag_name"] == tag_name:
+            return release["assets"]
+
+    raise ValueError(f"Release with tag '{tag_name}' not found")
 
 
 def _get_matching_asset(assets: list[dict], architecture: str, platform: str) -> dict:
@@ -166,9 +184,14 @@ def get_sifi_bridge(output_dir: str):
     """
     Pull the latest compatible version of SiFi Bridge CLI from the [official Github repository](https://github.com/SiFiLabs/sifi-bridge-pub).
 
+    Automatically finds the latest CLI release with matching major and minor version
+    numbers. The CLI uses SemVer format (e.g., "v2.0.0-beta.1") while this package
+    uses PEP 440 (e.g., "2.0.0b1"), but both are semantically equivalent.
+
     :param output_dir: Directory to save the executable to.
 
-    :raises AssertionError: If the version is not found or if `version` triplet is not valid.
+    :raises AssertionError: If the output directory does not exist.
+    :raises ValueError: If no compatible version is found or if the platform/architecture is not supported.
 
     :return: Path to the downloaded executable.
     """
