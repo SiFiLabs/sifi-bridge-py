@@ -1,4 +1,4 @@
-pdm.lock
+# Project-specific
 sifibridge
 
 # Byte-compiled / optimized / DLL files
@@ -104,9 +104,11 @@ ipython_config.py
 #   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
 #poetry.lock
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
+# uv
+#   uv.lock should be committed to version control for reproducible builds
+#   https://docs.astral.sh/uv/concepts/projects/#lockfile
+
+# pdm (legacy - no longer used)
 #   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
 #   in version control.
 #   https://pdm-project.org/#use-with-ide
