@@ -1,10 +1,11 @@
 import os
+import re
 import requests
 import shutil
 from platform import system, machine
 from importlib import metadata
 
-from semantic_version import Version
+from packaging.version import Version
 
 import numpy as np
 
@@ -23,19 +24,54 @@ def _get_package_version():
 
 
 def _are_compatible(ver_1: str | Version, ver_2: str | Version) -> bool:
-    """Check if two semantic verison-formatted strings are compatible (major and minor versions match).
+    """Check if two PEP 440 version strings are compatible (major and minor versions match).
+
+    Supports standard PEP 440 formats including pre-releases (e.g., 2.0.0b1, 2.0.0-beta.1).
+    Includes fallback mechanism for v-prefixed versions (e.g., v1.2.3).
 
     :return bool: True if compatible, False otherwise.
 
     """
-    if not isinstance(ver_1, Version):
-        ver_1 = Version(ver_1)
-    if not isinstance(ver_2, Version):
-        ver_2 = Version(ver_2)
+    def parse_version(ver):
+        """Parse version with fallback for non-standard formats."""
+        if isinstance(ver, Version):
+            return ver
 
-    are_compatible = ver_1.major == ver_2.major and ver_1.minor == ver_2.minor
+        ver_str = str(ver).strip()
 
-    return are_compatible
+        # Try standard parsing first (handles PEP 440 including beta, alpha, rc, etc.)
+        try:
+            return Version(ver_str)
+        except Exception:
+            pass
+
+        # Fallback: try stripping common prefixes like 'v'
+        if ver_str.startswith('v') or ver_str.startswith('V'):
+            try:
+                return Version(ver_str[1:])
+            except Exception:
+                pass
+
+        # Fallback: manual parsing for major.minor extraction
+        # Handle edge cases like: "v1.2.3-beta.1" after normalization fails
+        match = re.match(r'^[vV]?(\d+)\.(\d+)', ver_str)
+        if match:
+            major, minor = int(match.group(1)), int(match.group(2))
+            # Create a minimal Version object using just major.minor.0
+            try:
+                return Version(f"{major}.{minor}.0")
+            except Exception:
+                pass
+
+        # If all else fails, raise an error
+        raise ValueError(f"Unable to parse version: {ver}")
+
+    ver_1 = parse_version(ver_1)
+    ver_2 = parse_version(ver_2)
+
+    # Use .release tuple which works for all PEP 440 versions
+    # .release is a tuple like (2, 0, 0) for both "2.0.0" and "2.0.0b1"
+    return ver_1.release[:2] == ver_2.release[:2]
 
 
 def _fetch_releases() -> list[dict]:
@@ -47,14 +83,31 @@ def _fetch_releases() -> list[dict]:
 
 
 def _get_latest_matching_version(releases: list[dict]) -> Version:
+    """Get the latest release version compatible with the current package version.
+
+    :param releases: List of release dictionaries from GitHub API
+    :return: The latest compatible Version object
+    """
     sbp_version = Version(_get_package_version())
-    versions = list(
-        filter(
-            lambda ver: _are_compatible(sbp_version, ver),
-            [release["tag_name"] for release in releases],
-        )
-    )
-    return max(versions)
+
+    # Parse all tag names and filter for compatible versions
+    compatible_versions = []
+    for release in releases:
+        tag = release["tag_name"]
+        try:
+            # Parse the tag into a Version object
+            if _are_compatible(sbp_version, tag):
+                # Strip 'v' prefix if present for parsing
+                version_str = tag[1:] if tag.startswith('v') else tag
+                compatible_versions.append(Version(version_str))
+        except Exception:
+            # Skip releases with unparseable version tags
+            continue
+
+    if not compatible_versions:
+        raise ValueError(f"No compatible versions found for {sbp_version}")
+
+    return max(compatible_versions)
 
 
 def _get_release_assets(releases, version) -> list[dict]:

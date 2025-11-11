@@ -16,10 +16,10 @@ def main():
 
     emg_data = (
         {f"emg{i}": [] for i in range(8)}
-        if device_type == DeviceType.BIOARMBAND
+        if device_type == DeviceType.SIFIBAND
         else {"emg": []}
     )
-    base_key = "emg0" if device_type == DeviceType.BIOARMBAND else "emg"
+    base_key = "emg0" if device_type == DeviceType.SIFIBAND else "emg"
 
     while len(emg_data[base_key]) < 10000:
         new_data = sb.get_emg()
@@ -29,7 +29,7 @@ def main():
 
     time = [i / new_data["sample_rate"] for i in range(len(emg_data[base_key]))]
 
-    if device_type == DeviceType.BIOARMBAND:
+    if device_type == DeviceType.SIFIBAND:
         legend = [f"Channel {i}" for i in range(8)]
         for i in range(8):
             plt.plot(time, emg_data[f"emg{i}"])
@@ -43,6 +43,6 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
 
     main()
