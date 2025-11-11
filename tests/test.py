@@ -47,8 +47,8 @@ class TestSifiBridge(unittest.TestCase):
         self.sb.set_memory_mode(MemoryMode.BOTH)
 
     def test_set_channels(self):
-        self.sb.set_channels(False, False, False, False, False)
-        self.sb.set_channels(True, True, True, True, True)
+        self.sb.configure_sensors(False, False, False, False, False)
+        self.sb.configure_sensors(True, True, True, True, True)
 
     def test_set_filters(self):
         self.sb.set_filters(True)

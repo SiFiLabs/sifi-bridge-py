@@ -1,6 +1,6 @@
 [project]
 name = "sifi-bridge-py"
-version = "2.0.0"
+version = "2.0.0beta1"
 description = "Python bindings for the SiFi Bridge tool."
 authors = [{ name = "SiFi Labs", email = "gabrielg@sifilabs.com" }]
 dependencies = ["numpy", "requests>=2.32.3", "semantic-version>=2.10.0"]
