@@ -2,7 +2,8 @@ import subprocess as sp
 import json
 from collections.abc import Iterable
 from enum import Enum
-import select
+import threading
+import queue
 
 import logging
 from sifi_bridge_py import utils
@@ -207,6 +208,26 @@ class SifiBridge:
     SiFi Bridge executable instance.
     """
 
+    _stdout_queue: queue.Queue
+    """
+    Queue for reading stdout lines asynchronously.
+    """
+
+    _stdout_thread: threading.Thread
+    """
+    Background thread for reading stdout.
+    """
+
+    _stderr_queue: queue.Queue
+    """
+    Queue for reading stderr lines asynchronously.
+    """
+
+    _stderr_thread: threading.Thread
+    """
+    Background thread for reading stderr.
+    """
+
     active_device: str
 
     def __init__(
@@ -264,7 +285,20 @@ class SifiBridge:
             exec_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE
         )
 
-        self.active_device = self.get_data()["new"]["active"]
+        # Start background threads to read stdout and stderr asynchronously
+        self._stdout_queue = queue.Queue()
+        self._stdout_thread = threading.Thread(
+            target=self._read_stdout_worker, daemon=True
+        )
+        self._stdout_thread.start()
+
+        self._stderr_queue = queue.Queue()
+        self._stderr_thread = threading.Thread(
+            target=self._read_stderr_worker, daemon=True
+        )
+        self._stderr_thread.start()
+
+        self.active_device = "device"
 
     def show(self):
         """
@@ -764,6 +798,66 @@ class SifiBridge:
         """
         return self.send_command(DeviceCommand.STOP_ACQUISITION)
 
+    def _read_stdout_worker(self):
+        """
+        Background worker thread that continuously reads from stdout and puts lines into queue.
+        Runs until the subprocess terminates.
+        """
+        try:
+            while True:
+                line = self._bridge.stdout.readline()
+                if not line:  # EOF - subprocess terminated
+                    break
+                self._stdout_queue.put(line.decode())
+        except Exception as e:
+            logging.error(f"Error reading stdout: {e}")
+
+    def _read_stderr_worker(self):
+        """
+        Background worker thread that continuously reads from stderr and puts lines into queue.
+        Runs until the subprocess terminates.
+        """
+        try:
+            while True:
+                line = self._bridge.stderr.readline()
+                if not line:  # EOF - subprocess terminated
+                    break
+                self._stderr_queue.put(line.decode())
+        except Exception as e:
+            logging.error(f"Error reading stderr: {e}")
+
+    def clear_data_buffer(self) -> int:
+        """
+        Clear all pending data packets from the internal FIFO queue.
+
+        This is useful to discard accumulated packets, for example:
+        - After calling start() but before beginning actual data collection
+        - To flush stale data after a pause in processing
+        - To reset the queue after an error condition
+
+        :return: Number of packets that were discarded from the queue.
+
+        # Example
+
+        ```python
+        >>> sb = SifiBridge()
+        >>> sb.connect()
+        >>> sb.start()
+        >>> time.sleep(1.0)  # Let data accumulate
+        >>> discarded = sb.clear_data_buffer()  # Clear the buffer
+        >>> print(f"Discarded {discarded} packets")
+        >>> packet = sb.get_ecg()  # Get fresh data
+        ```
+        """
+        count = 0
+        try:
+            while True:
+                self._stdout_queue.get_nowait()
+                count += 1
+        except queue.Empty:
+            pass
+        return count
+
     def get_data(self, timeout: float | None = None) -> dict:
         """
         Wait for Bridge to return a packet.
@@ -772,12 +866,11 @@ class SifiBridge:
 
         :return: Packet as a dictionary.
         """
-        ready_to_read, _, _ = select.select([self._bridge.stdout], [], [], timeout)
-        ret = {}
-        if self._bridge.stdout in ready_to_read:
-            packet = self._bridge.stdout.readline().decode()
-            ret = json.loads(packet)
-        return ret
+        try:
+            packet = self._stdout_queue.get(timeout=timeout)
+            return json.loads(packet)
+        except queue.Empty:
+            return {}
 
     def get_data_with_key(self, keys: str | Iterable[str]) -> dict:
         """
@@ -897,11 +990,12 @@ class SifiBridge:
         Raises:
             ConnectionError: If BLE is off.
         """
-        ready_to_read, _, _ = select.select([self._bridge.stderr], [], [], 0.1)
-
-        if self._bridge.stderr in ready_to_read:
-            logging.error(self._bridge.stderr.readline().decode())
+        try:
+            error_line = self._stderr_queue.get(timeout=0.1)
+            logging.error(error_line)
             raise ConnectionError("Bluetooth is off.")
+        except queue.Empty:
+            pass  # No error message, Bluetooth is likely on
 
     def __write(self, cmd: str):
         """Write some data to SiFi Bridge's stdin.
