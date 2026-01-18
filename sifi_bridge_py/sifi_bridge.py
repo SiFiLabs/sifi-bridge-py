@@ -798,6 +798,10 @@ class SifiBridge:
         """
         return self.send_command(DeviceCommand.STOP_ACQUISITION)
 
+    def send_event(self) -> dict:
+        self.__write("event")
+        return self.get_data_with_key("event")
+
     def _read_stdout_worker(self):
         """
         Background worker thread that continuously reads from stdout and puts lines into queue.

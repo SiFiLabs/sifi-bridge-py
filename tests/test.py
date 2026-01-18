@@ -121,6 +121,11 @@ class TestSifiBridge(unittest.TestCase):
         self.sb.select_device(devs[0])
         self.assertEqual(self.sb.active_device, devs[0])
 
+    def test_send_event(self):
+        """Test event generation."""
+        ret = self.sb.send_event()
+        assert "event" in ret.keys()
+
     def test_create_device_no_select(self):
         """Test device creation without selecting it."""
         test_device_name = "create_device_no_select"
