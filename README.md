@@ -36,4 +36,4 @@ The wrapper is updated for every SiFi Bridge version. Major and minor versions w
 
 **NOTE** If you add new enums or types to `sifi-bridge-py`, don't forget to re-export them in `src/__init__.py`.
 
-First, run the tests: `python -m unittest -v`. Then, to deploy to PyPI, push a tag to the `main` branch. The tag must respect semantic versioning format: `x.y.z`.
+First, run the tests: `python -m unittest -v`. Then, to deploy to PyPI, push a tag to the `main` branch. The tag must respect semantic versioning format: `x.y.z`, or for beta versions `x.y.z-bn`, where `n` is the beta number.
