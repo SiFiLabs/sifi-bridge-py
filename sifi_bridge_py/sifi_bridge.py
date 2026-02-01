@@ -765,6 +765,22 @@ class SifiBridge:
 
         return kb_to_download
 
+    def download_memory_serial(self, port: str, output_dir: str) -> bool:
+        """
+        Download the memory from the device via serial port.
+
+        :param port: Serial port to use (e.g., COM3, /dev/ttyUSB0)
+        :param output_dir: Directory to save the downloaded memory data
+
+        :return: True if download was successful, False otherwise.
+        """
+        self.__write(f"download-memory --serial {port} {output_dir}")
+        resp = self.get_data_with_key("download_memory")
+        if "success" in resp["download_memory"]["message"]:
+            return True
+        else:
+            return False
+
     def send_command(self, command: DeviceCommand | str) -> bool:
         """
         Send a command to active device.
@@ -872,6 +888,7 @@ class SifiBridge:
         """
         try:
             packet = self._stdout_queue.get(timeout=timeout)
+            logging.info(packet)
             return json.loads(packet)
         except queue.Empty:
             return {}

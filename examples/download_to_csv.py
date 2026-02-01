@@ -7,7 +7,7 @@ from sifi_bridge_py.sifi_bridge import DeviceType
 
 def main():
     OUTPUT_DIR = "./"
-    sb = sbp.SifiBridge(data_transport="csv://./")
+    sb = sbp.SifiBridge(publishers="csv://./")
     while not sb.connect(DeviceType.BIOPOINT_V1_3):
         continue
 
@@ -24,6 +24,7 @@ def main():
     for f in os.listdir(OUTPUT_DIR):
         if f.endswith(".csv"):
             print(f"{f}")
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
