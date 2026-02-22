@@ -35,7 +35,6 @@ class PacketType(Enum):
     MEMORY = "memory"
     TEMPERATURE = "temperature"
     START_TIME = "start_time"
-    LOW_LATENCY = "low_latency"
 
 
 class PacketStatus(Enum):
@@ -662,8 +661,8 @@ class SifiBridge:
 
         cmd_parts.append(f"--state {'on' if state else 'off'}")
         cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--acc-range {accel_range}")
-        cmd_parts.append(f"--gyro-range {gyro_range}")
+        cmd_parts.append(f"--acc-range accel{accel_range}-g")
+        cmd_parts.append(f"--gyro-range gyro{gyro_range}-dps")
 
         self.__write(" ".join(cmd_parts))
         return self.get_data_with_key("configure")

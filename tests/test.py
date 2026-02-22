@@ -60,6 +60,11 @@ class TestSifiBridge(unittest.TestCase):
         self.sb.configure_ppg(ir=8, red=8, green=8, blue=8, sens=PpgSensitivity.HIGH)
         self.sb.configure_ppg(ir=8, red=8, green=8, blue=8, sens=PpgSensitivity.MAX)
 
+    def test_configure_imu(self):
+        """Test IMU configuration."""
+        # Test with different sensitivity levels using keyword arguments
+        self.sb.configure_imu(fs=200, accel_range=4, gyro_range=1000)
+
     def test_configure_sampling_frequencies(self):
         """Test sampling frequency configuration."""
         self.sb.configure_sampling_freqs(500, 2000, 100, 100, 100)
