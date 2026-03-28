@@ -242,7 +242,7 @@ class SifiBridge:
 
         For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help`
 
-        :param publishers: Use additional publishers. Leave empty to only use stdout. Otherwise any combination of {`"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`, `"csv://data/root/directory/"`}.
+        :param publishers: Use additional publishers. Leave empty to only use stdout. Otherwise any combination of {`"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`}.
         :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to `sifibridge`'s `lsl` REPL command for more information.
         """
 
@@ -764,18 +764,24 @@ class SifiBridge:
 
         return kb_to_download
 
-    def download_memory_serial(self, port: str, output_dir: str) -> bool:
+    def download_memory_serial(
+        self, port: str, output_dir: str, format: str = "csv"
+    ) -> bool:
         """
-        Download the memory from the device via serial port.
+        Download the memory from the device via serial port and export it to file.
 
         :param port: Serial port to use (e.g., COM3, /dev/ttyUSB0)
         :param output_dir: Directory to save the downloaded memory data
+        :param format: Output file format. Either `csv` or `hdf5`
 
         :return: True if download was successful, False otherwise.
         """
-        self.__write(f"download-memory --serial {port} {output_dir}")
+        self.__write(f"download-memory --serial {port}")
         resp = self.get_data_with_key("download_memory")
         if "success" in resp["download_memory"]["message"]:
+            self.send_command(
+                f"buffer export -d {self.active_device} --dir {output_dir} {format}"
+            )
             return True
         else:
             return False

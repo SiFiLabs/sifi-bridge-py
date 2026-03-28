@@ -9,7 +9,7 @@ def main():
     OUTPUT_DIR = "./"
     sb = sbp.SifiBridge()
 
-    kb = sb.download_memory_serial("/dev/ttyACM0", "./")
+    kb = sb.download_memory_serial("/dev/ttyACM0", "./", "hdf5")
     print(kb)
 
 

@@ -7,7 +7,7 @@ from sifi_bridge_py.sifi_bridge import DeviceType
 
 def main():
     OUTPUT_DIR = "./"
-    sb = sbp.SifiBridge(publishers="csv://./")
+    sb = sbp.SifiBridge()
     while not sb.connect(DeviceType.BIOPOINT_V1_3):
         continue
 
@@ -17,9 +17,10 @@ def main():
     while True:
         data = sb.get_data()
 
-        if data["status"] == "MemoryDownloadCompleted":
+        if data["status"] == sbp.PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value:
             break
 
+    sb.send_command(f"buffer export -d {sb.active_device} --dir {OUTPUT_DIR} csv")
     print("Finished downloading device memory:")
     for f in os.listdir(OUTPUT_DIR):
         if f.endswith(".csv"):

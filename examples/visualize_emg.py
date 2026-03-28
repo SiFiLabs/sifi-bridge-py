@@ -11,7 +11,8 @@ def main():
     while not sb.connect(device_type):
         continue
     sb.configure_sensors(emg=True)
-    sb.configure_emg((20, 450), 60)
+    sb.configure_emg(fs=1000, mains_notch=60)
+    sb.stop()
     sb.start()
 
     emg_data = (
@@ -19,6 +20,7 @@ def main():
         if device_type == DeviceType.SIFIBAND
         else {"emg": []}
     )
+    time = []
     base_key = "emg0" if device_type == DeviceType.SIFIBAND else "emg"
 
     while len(emg_data[base_key]) < 10000:
@@ -26,8 +28,7 @@ def main():
         print(f"Sampling rate: {new_data['sample_rate']:.2f}")
         for e, v in new_data["data"].items():
             emg_data[e].extend(v)
-
-    time = [i / new_data["sample_rate"] for i in range(len(emg_data[base_key]))]
+        time.extend(new_data["timestamps"])
 
     if device_type == DeviceType.SIFIBAND:
         legend = [f"Channel {i}" for i in range(8)]
