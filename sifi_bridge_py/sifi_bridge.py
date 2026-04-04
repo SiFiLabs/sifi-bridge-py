@@ -706,9 +706,9 @@ class SifiBridge:
         self.__write(f"configure low-latency-mode {streaming}")
         return self.get_data_with_key("configure")["configure"]
 
-    def set_stealth_mode(self, enable: bool):
+    def set_night_mode(self, enable: bool):
         """
-        Enable or disable stealth mode. When enabled, device LEDs are disabled during acquisition.
+        Enable or disable night mode. When enabled, device LEDs are disabled during acquisition.
 
         Useful for:
         - Sleep studies: Minimize light disturbance
@@ -720,7 +720,7 @@ class SifiBridge:
         :return: Configuration response
         """
         state = "on" if enable else "off"
-        self.__write(f"configure stealth-mode {state}")
+        self.__write(f"configure night-mode {state}")
         return self.get_data_with_key("configure")["configure"]
 
     def set_motor_intensity(self, level: int):
