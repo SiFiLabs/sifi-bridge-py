@@ -48,7 +48,7 @@ class PacketStatus(Enum):
     >>> sb.connect()
     >>> sb.start()
     >>> packet = sb.get_ecg()
-    >>> print(packet["status"] == PacketStatus.OK.value
+    >>> print(packet["status"] == PacketStatus.OK.value)
     True
     ```
     """
@@ -75,7 +75,7 @@ class SensorChannel(Enum):
     >>> imu = packet["data"]
     >>> print(len(imu) == len(SensorChannel.IMU.value)) # 7 IMU channels
     True
-    >>> qw = emg[SensorChannel.IMU.value[0]] # get first channel
+    >>> qw = imu[SensorChannel.IMU.value[0]] # get first channel
     >>> print(len(qw), qw)
     8 [0.5427, 0.5423, 0.5426, 0.5424, 0.5424, 0.5428, 0.5424, 0.5422]
     ```
@@ -628,11 +628,11 @@ class SifiBridge:
         :param state: enable PPG sensor
         :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
         :param ir: current of IR LED in mA (1-50)
-        :param r: current of R LED in mA (1-50)
-        :param g: current of G LED in mA (1-50)
-        :param b: current of B LED in mA (1-50)
+        :param red: current of R LED in mA (1-50)
+        :param green: current of G LED in mA (1-50)
+        :param blue: current of B LED in mA (1-50)
         :param sens: light sensor sensitivity. See `PpgSensitivity` for more information
-        :param avg: signal averaging factor for a smoother but less responsive signal
+        :param avg: signal averaging factor for a smoother but less responsive signal [1, 2, 4, 8, 16, 32]
 
         :return: Configuration response
         """
@@ -665,7 +665,7 @@ class SifiBridge:
 
         :param state: enable IMU sensor
         :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
-        :param accel_rage: accelerometer range (g) [2, 4, 8, 16]
+        :param accel_range: accelerometer range (g) [2, 4, 8, 16]
         :param gyro_range: gyroscope range (degrees per second) [16, 31, 63, 125, 250, 500, 1000, 2000]
 
         :return: Configuration response
@@ -938,7 +938,7 @@ class SifiBridge:
                     elif i == len(keys) - 1:
                         is_ok = True
                     else:
-                        tmp = ret[k]
+                        tmp = tmp[k]
                 if is_ok:
                     break
         return ret
