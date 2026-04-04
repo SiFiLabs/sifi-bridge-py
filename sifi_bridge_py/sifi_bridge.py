@@ -227,8 +227,6 @@ class SifiBridge:
     Background thread for reading stderr.
     """
 
-    active_device: str
-
     def __init__(
         self, publishers: None | str | Iterable[str] = None, use_lsl: bool = False
     ):
@@ -297,14 +295,20 @@ class SifiBridge:
         )
         self._stderr_thread.start()
 
-        self.active_device = "device"
-
     def show(self):
         """
         Get information about the current SiFi Bridge device.
         """
         self.__write("show")
         return self.get_data_with_key("show")["show"]
+
+    def get_active_device(self) -> str:
+        """
+        Get the currently active device name.
+
+        :returns: Active device name
+        """
+        return self.show()["id"]
 
     def create_device(self, name: str, select: bool = True):
         """
@@ -313,50 +317,63 @@ class SifiBridge:
         :param name: Device name
         :param select: True to select the device after creation
 
-        Raises a `ValueError` if `uid` contains spaces.
+        :raises `ValueError`: if `name` contains spaces.
 
-        :return: Response from Bridge
+        :return: Active device name
         """
         if " " in name:
             raise ValueError(f"Spaces are not supported in device name ({name})")
 
-        old_active = self.active_device
+        old_active = self.get_active_device()
+
         self.__write(f"new {name}")
-        resp = self.get_data_with_key("new")
-        self.active_device = resp["new"]["active"]
+        _ = self.get_data_with_key("new")
+
         if not select:
             return self.select_device(old_active)
-        return resp
 
-    def select_device(self, name: str):
+        return self.get_active_device()
+
+    def select_device(self, name: str) -> str:
         """
         Select a device.
 
         :param name: Name of the device to select
 
-        :return: Response from SiFi Bridge
-        """
-        self.__write(f"select {name}")
-        resp = self.get_data_with_key("select")
-        self.active_device = resp["select"]["active"]
-        return resp
+        :raises `ValueError`: if `name` contains spaces.
 
-    def delete_device(self, name: str):
+        :return: Active device name
+        """
+        if " " in name:
+            raise ValueError(f"Spaces are not supported in device name ({name})")
+
+        self.__write(f"select {name}")
+        _ = self.get_data_with_key("select")
+        return self.get_active_device()
+
+    def delete_device(self, name: str) -> str:
         """
         Delete a device and selects another one.
 
         :param name: Name of the manager to delete
 
-        :return: Response from SiFi Bridge
+        :raises `ValueError`: if `name` contains spaces.
+
+        :return: Active device name
         """
+        if " " in name:
+            raise ValueError(f"Spaces are not supported in device name ({name})")
+
         self.__write(f"delete {name}")
-        return self.get_data_with_key("delete")["delete"]["active"]
+        _ = self.get_data_with_key("delete")
+        return self.get_active_device()
 
     def list_devices(self, source: ListSources | str) -> list[str]:
         """
         List all devices found from a given `source`.
 
         :return: Response from SiFi Bridge
+
         :raises ConnectionError: If Bluetooth is off.
         """
         if isinstance(source, str):
@@ -389,7 +406,7 @@ class SifiBridge:
             logging.info(f"Could not connect to {handle}")
         return ret
 
-    def disconnect(self):
+    def disconnect(self) -> bool:
         """
         Disconnect from the active device.
 
@@ -399,14 +416,14 @@ class SifiBridge:
         ret = self.get_data_with_key("disconnect")["disconnect"]["connected"]
         return ret
 
-    def set_filters(self, enable: bool):
+    def set_filters(self, enable: bool) -> dict:
         """
         Set state of onboard filtering for all sensors.
 
         :return: Configuration response
         """
         self.__write(f"configure filtering {'on' if enable else 'off'}")
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_sensors(
         self,
@@ -435,7 +452,7 @@ class SifiBridge:
         cmd_parts.append(f"--ppg {'on' if ppg else 'off'}")
 
         self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def set_ble_power(self, power: BleTxPower | str):
         """
@@ -449,7 +466,7 @@ class SifiBridge:
             power = BleTxPower(power)
 
         self.__write(f"configure ble-power {power.value}")
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def set_memory_mode(self, memory_config: MemoryMode | str):
         """
@@ -465,7 +482,7 @@ class SifiBridge:
             memory_config = MemoryMode(memory_config)
 
         self.__write(f"configure memory {memory_config.value}")
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_ecg(
         self,
@@ -496,9 +513,9 @@ class SifiBridge:
         cmd_parts.append(f"--fs {fs}")
         cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
         if mains_notch == 50:
-            cmd_parts.append("--mains-notch on50")
+            cmd_parts.append("--mains-notch 50")
         elif mains_notch == 60:
-            cmd_parts.append("--mains-notch on60")
+            cmd_parts.append("--mains-notch 60")
         else:
             cmd_parts.append("--mains-notch off")
         cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
@@ -506,7 +523,7 @@ class SifiBridge:
         cmd_parts.append(f"--fhi {fhi}")
 
         self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_emg(
         self,
@@ -537,9 +554,9 @@ class SifiBridge:
         cmd_parts.append(f"--fs {fs}")
         cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
         if mains_notch == 50:
-            cmd_parts.append("--mains-notch on50")
+            cmd_parts.append("--mains-notch 50")
         elif mains_notch == 60:
-            cmd_parts.append("--mains-notch on60")
+            cmd_parts.append("--mains-notch 60")
         else:
             cmd_parts.append("--mains-notch off")
         cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
@@ -547,7 +564,7 @@ class SifiBridge:
         cmd_parts.append(f"--fhi {fhi}")
 
         self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_eda(
         self,
@@ -581,9 +598,9 @@ class SifiBridge:
         cmd_parts.append(f"--fs {fs}")
         cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
         if mains_notch == 50:
-            cmd_parts.append("--mains-notch on50")
+            cmd_parts.append("--mains-notch 50")
         elif mains_notch == 60:
-            cmd_parts.append("--mains-notch on60")
+            cmd_parts.append("--mains-notch 60")
         else:
             cmd_parts.append("--mains-notch off")
         cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
@@ -592,7 +609,7 @@ class SifiBridge:
         cmd_parts.append(f"--freq {freq}")
 
         self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_ppg(
         self,
@@ -634,7 +651,7 @@ class SifiBridge:
         cmd_parts.append(f"--avg {avg}")
 
         self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_imu(
         self,
@@ -648,11 +665,8 @@ class SifiBridge:
 
         :param state: enable IMU sensor
         :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
-        :param ir: current of IR LED in mA (1-50)
-        :param r: current of R LED in mA (1-50)
-        :param g: current of G LED in mA (1-50)
-        :param b: current of B LED in mA (1-50)
-        :param sens: light sensor sensitivity. See `PpgSensitivity` for more information.
+        :param accel_rage: accelerometer range (g) [2, 4, 8, 16]
+        :param gyro_range: gyroscope range (degrees per second) [16, 31, 63, 125, 250, 500, 1000, 2000]
 
         :return: Configuration response
         """
@@ -661,11 +675,11 @@ class SifiBridge:
 
         cmd_parts.append(f"--state {'on' if state else 'off'}")
         cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--acc-range accel{accel_range}-g")
-        cmd_parts.append(f"--gyro-range gyro{gyro_range}-dps")
+        cmd_parts.append(f"--acc-range {accel_range}")
+        cmd_parts.append(f"--gyro-range {gyro_range}")
 
         self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def configure_sampling_freqs(self, ecg=500, emg=2000, eda=50, imu=100, ppg=100):
         """
@@ -690,7 +704,7 @@ class SifiBridge:
         """
         streaming = "on" if on else "off"
         self.__write(f"configure low-latency-mode {streaming}")
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def set_stealth_mode(self, enable: bool):
         """
@@ -707,7 +721,7 @@ class SifiBridge:
         """
         state = "on" if enable else "off"
         self.__write(f"configure stealth-mode {state}")
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def set_motor_intensity(self, level: int):
         """
@@ -729,7 +743,7 @@ class SifiBridge:
             )
 
         self.__write(f"configure motor-intensity {level}")
-        return self.get_data_with_key("configure")
+        return self.get_data_with_key("configure")["configure"]
 
     def start_memory_download(self) -> int:
         """
@@ -742,14 +756,16 @@ class SifiBridge:
         :raise ConnectionError: If the device is not connected.
         :raise TypeError: If the device does not support memory download.
         """
+        active_device = self.get_active_device()
+
         if not self.show()["connected"]:
-            raise ConnectionError(f"{self.active_device} is not connected")
+            raise ConnectionError(f"{active_device} is not connected")
 
         self.send_command(DeviceCommand.START_STATUS_UPDATE)
         kb_to_download = None
         while True:
             data = self.get_data()
-            if data["id"] != self.active_device or data["packet_type"] != "status":
+            if data["id"] != active_device or data["packet_type"] != "status":
                 continue
             if "memory_used_kbytes" not in data["data"].keys():
                 raise TypeError(
@@ -779,8 +795,9 @@ class SifiBridge:
         self.__write(f"download-memory --serial {port}")
         resp = self.get_data_with_key("download_memory")
         if "success" in resp["download_memory"]["message"]:
-            self.send_command(
-                f"buffer export -d {self.active_device} --dir {output_dir} {format}"
+            active_device = self.get_active_device()
+            self.__write(
+                f"buffer export --device {active_device} --dir {output_dir} {format}"
             )
             return True
         else:
