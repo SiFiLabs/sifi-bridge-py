@@ -6,7 +6,6 @@ import threading
 import queue
 
 import logging
-from sifi_bridge_py import utils
 
 
 class PacketType(Enum):
@@ -233,10 +232,7 @@ class SifiBridge:
         """
         Create a SiFi Bridge instance. Currently, only standard input is supported to interact with SiFi Bridge.
 
-        The constructor first checks if `sifibridge` is present in the current working directory.
-        If it is, it checks if its version is compatible with the Python package.
-        If they are incompatible OR `sifibridge` is not already in the directory, the latest compatible version is downloaded from the official Github repository.
-        If they are compatible, no matter the patch version, the existing `sifibridge` is used.
+        Uses the sifibridge binary bundled with the `sifibridge-bin` package.
 
         For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help`
 
@@ -244,25 +240,9 @@ class SifiBridge:
         :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to `sifibridge`'s `lsl` REPL command for more information.
         """
 
-        executable = "./sifibridge"
+        from sifibridge_bin import get_executable
 
-        # Check if sifibridge in cwd
-        try:
-            cli_version = (
-                sp.run([executable, "-V"], stdout=sp.PIPE)
-                .stdout.decode()
-                .strip()
-                .split(" ")[-1]
-            )
-        except FileNotFoundError:
-            cli_version = "0.0.1"
-        py_version = utils._get_package_version()
-
-        logging.debug(f"CLI version: {cli_version}, Python version: {py_version}")
-
-        if not utils._are_compatible(cli_version, py_version):
-            logging.info("Downloading latest compatible version of sifibridge.")
-            executable = utils.get_sifi_bridge("./")
+        executable = get_executable()
 
         exec_command = [executable]
 

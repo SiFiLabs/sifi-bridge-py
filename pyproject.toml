@@ -4,8 +4,8 @@ name = "sifi-bridge-py"
 version = "2.0.0-b.8"
 description = "Python bindings for the SiFi Bridge tool."
 authors = [{ name = "SiFi Labs", email = "gabrielg@sifilabs.com" }]
-dependencies = ["numpy", "requests>=2.32.3", "packaging>=24.0"]
-requires-python = "<3.13, >=3.9"
+dependencies = ["numpy", "packaging>=24.0", "sifibridge-bin>=2.0.0b8"]
+requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "MIT" }
 urls = { repository = "https://github.com/SiFiLabs/sifi-bridge-py" }
@@ -21,3 +21,6 @@ examples = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+sifibridge-bin = { path = "./sifibridge-bin" }

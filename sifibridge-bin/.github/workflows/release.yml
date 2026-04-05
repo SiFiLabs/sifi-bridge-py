@@ -1,0 +1,49 @@
+name: release-sifibridge-bin
+
+on:
+  push:
+    tags:
+      - "bin-[0-9]+.[0-9]+.[0-9]+*"
+      - "bin-v[0-9]+.[0-9]+.[0-9]+*"
+
+jobs:
+  build-and-publish:
+    name: Build platform wheels and publish to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: sifibridge-bin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install build dependencies
+        run: uv pip install --system requests
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Strip "bin-" or "bin-v" prefix from tag
+          TAG="${GITHUB_REF#refs/tags/bin-}"
+          TAG="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build platform wheels
+        run: python scripts/build_wheels.py "${{ steps.version.outputs.tag }}"
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sifibridge-bin/dist/
