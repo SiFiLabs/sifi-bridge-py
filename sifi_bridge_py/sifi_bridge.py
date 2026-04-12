@@ -471,8 +471,8 @@ class SifiBridge:
         dc_notch: bool = True,
         mains_notch: None | int = 50,
         bandpass: bool = True,
-        flo: float = 0,
-        fhi: float = 30,
+        flo: int = 0,
+        fhi: int = 30,
     ) -> dict:
         """
         Configure ECG sensor.
@@ -512,8 +512,8 @@ class SifiBridge:
         dc_notch: bool = True,
         mains_notch: None | int = 50,
         bandpass: bool = True,
-        flo: float = 20,
-        fhi: float = 450,
+        flo: int = 20,
+        fhi: int = 450,
     ) -> dict:
         """
         Configure EMG sensor.
@@ -553,8 +553,8 @@ class SifiBridge:
         dc_notch: bool = True,
         mains_notch: int | None = 50,
         bandpass: bool = True,
-        flo: float = 0,
-        fhi: float = 5,
+        flo: int = 0,
+        fhi: int = 5,
         freq: int = 0,
     ) -> dict:
         """

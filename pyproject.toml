@@ -1,7 +1,7 @@
 [project]
 name = "sifi-bridge-py"
 # https://packaging.python.org/en/latest/specifications/version-specifiers/#pre-release-separators
-version = "2.0.0-b9"
+version = "2.0.0-b10"
 description = "Python bindings for the SiFi Bridge tool."
 authors = [{ name = "SiFi Labs", email = "gabrielg@sifilabs.com" }]
 dependencies = ["numpy", "packaging>=24.0", "sifibridge-bin>=2.0.0b8"]

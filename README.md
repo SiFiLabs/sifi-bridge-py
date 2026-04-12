@@ -29,10 +29,27 @@ The wrapper is updated for every SiFi Bridge version. Major and minor versions w
 
 ## Local development
 
-`pip install path/to/sifi-bridge-py/`
+See [DEVELOPMENT.md](DEVELOPMENT.md) for full setup instructions.
+
+```bash
+export SIFIBRIDGE_EXE=./sifibridge  # point to a local binary
+uv sync
+```
 
 ## Deployment
 
-**NOTE** If you add new enums or types to `sifi-bridge-py`, don't forget to re-export them in `src/__init__.py`.
+**NOTE** If you add new enums or types, re-export them in `sifi_bridge_py/__init__.py`.
 
-First, run the tests: `python -m unittest -v`. Then, to deploy to PyPI, push a tag to the `main` branch. The tag must respect semantic versioning format: `x.y.z`, or for beta versions `x.y.z-bn`, where `n` is the beta number.
+### Publishing `sifibridge-bin` (new CLI binary)
+
+1. Update `version` in `sifibridge-bin/pyproject.toml`
+2. Build wheels: `cd sifibridge-bin && python scripts/build_wheels.py <release-tag>`
+3. Publish: `uv publish dist/*` or push a `bin-<version>` tag
+
+### Publishing `sifi-bridge-py` (Python bindings)
+
+1. Update `version` in `pyproject.toml` (and `sifibridge-bin` dependency pin if needed)
+2. Run tests: `python -m unittest -v`
+3. Push a version tag (e.g. `2.0.0-b9`) to `main` — CI handles the rest
+
+`sifibridge-bin` must be on PyPI before publishing a `sifi-bridge-py` version that depends on it.
