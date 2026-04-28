@@ -14,7 +14,7 @@ Inline documentation is provided. Sphinx API documentation will be coming eventu
 
 ## Examples
 
-Examples are available in the `examples/` directory of this project.
+Examples are available at our documentation website: [https://docs.sifilabs.com/sifi-bridge-py/examples](https://docs.sifilabs.com/sifi-bridge-py/examples)
 
 ## Tests
 
