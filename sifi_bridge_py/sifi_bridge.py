@@ -1,5 +1,6 @@
 import subprocess as sp
 import json
+import socket
 from collections.abc import Iterable
 from enum import Enum
 import threading
@@ -219,60 +220,76 @@ class ListSources(Enum):
 
 class SifiBridge:
     """
-    Wrapper class over Sifi Bridge CLI tool. It is recommend to use it in a thread to avoid blocking on I/O.
+    Wrapper over the `sifibridge` CLI.
+
+    Stdout is used strictly as a request/reply channel for REPL commands
+    (one JSON object per command). Sensor data is streamed separately over
+    a local TCP socket via `--tcp-out`, so it never interleaves with command
+    responses. This makes every command method a simple write-then-read.
     """
 
     _bridge: sp.Popen[bytes]
-    """
-    SiFi Bridge executable instance.
-    """
+    """SiFi Bridge subprocess."""
 
-    _stdout_queue: queue.Queue
-    """
-    Queue for reading stdout lines asynchronously.
-    """
+    _response_queue: queue.Queue
+    """Parsed JSON lines from stdout (one per command response)."""
 
-    _stdout_thread: threading.Thread
-    """
-    Background thread for reading stdout.
-    """
+    _data_queue: queue.Queue
+    """Parsed JSON sensor packets received over the data socket."""
 
     _stderr_queue: queue.Queue
-    """
-    Queue for reading stderr lines asynchronously.
-    """
+    """Raw stderr lines for BLE-off detection."""
 
-    _stderr_thread: threading.Thread
-    """
-    Background thread for reading stderr.
-    """
+    _response_lock: threading.Lock
+    """Serializes (write to stdin) → (read from response queue) pairs."""
+
+    _DEFAULT_REQUEST_TIMEOUT: float = 5.0
+    """Default per-command timeout. sifibridge should reply within ms locally; the timeout exists only so misuse (no device, etc.) doesn't hang forever."""
 
     def __init__(
-        self, publishers: None | str | Iterable[str] = None, use_lsl: bool = False
+        self,
+        publishers: None | str | Iterable[str] = None,
+        use_lsl: bool = False,
     ):
         """
-        Create a SiFi Bridge instance. Currently, only standard input is supported to interact with SiFi Bridge.
+        Spawn a sifibridge subprocess and connect to its data channel.
 
-        Uses the sifibridge binary bundled with the `sifibridge-bin` package.
-
-        For more documentation about SiFi Bridge, see `sifibridge -h` or the interactive help: `sifibridge; help`
-
-        :param publishers: Use additional publishers. Leave empty to only use stdout. Otherwise any combination of {`"tcp://<ip>:<port>"`, `"udp://<ip>:<port>"`}.
-        :param use_lsl: If `True`, `sifibridge` will also stream sensor data to Lab Streaming Layer outlets. Refer to `sifibridge`'s `lsl` REPL command for more information.
+        :param publishers: Additional publishers, e.g. `"udp://<ip>:<port>"`.
+            The `tcp` publisher is reserved for internal use by this wrapper
+            and will be rejected if provided.
+        :param use_lsl: If True, pass `--lsl` so sifibridge also streams data
+            to Lab Streaming Layer outlets.
         """
-
         from sifibridge_bin import get_executable
 
         executable = get_executable()
 
-        exec_command = [executable]
+        # Bind a TCP listener on an ephemeral port; sifibridge will dial it
+        # for the data stream.
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        host, port = listener.getsockname()
+        listener.settimeout(5.0)
+
+        exec_command = [
+            executable,
+            "--no-stdout-data",
+            "--tcp-out",
+            f"{host}:{port}",
+        ]
 
         if publishers is not None:
             if isinstance(publishers, str):
                 publishers = [publishers]
             for publisher in publishers:
-                p, parg = publisher.split("://")
-                exec_command.append(f"--{p}-out")
+                scheme, parg = publisher.split("://")
+                if scheme == "tcp":
+                    raise ValueError(
+                        "tcp publishers are reserved for internal use by SifiBridge; "
+                        "pass a udp:// publisher or use_lsl=True instead"
+                    )
+                exec_command.append(f"--{scheme}-out")
                 exec_command.append(parg)
 
         if use_lsl:
@@ -283,35 +300,38 @@ class SifiBridge:
             exec_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE
         )
 
-        # Start background threads to read stdout and stderr asynchronously
-        self._stdout_queue = queue.Queue()
-        self._stdout_thread = threading.Thread(
-            target=self._read_stdout_worker, daemon=True
-        )
-        self._stdout_thread.start()
+        try:
+            self._data_sock, _ = listener.accept()
+        except socket.timeout:
+            self._bridge.kill()
+            raise RuntimeError(
+                "sifibridge did not connect to the data socket within 5s"
+            )
+        finally:
+            listener.close()
 
+        self._response_queue = queue.Queue()
+        self._data_queue = queue.Queue()
         self._stderr_queue = queue.Queue()
-        self._stderr_thread = threading.Thread(
-            target=self._read_stderr_worker, daemon=True
-        )
-        self._stderr_thread.start()
+        self._response_lock = threading.Lock()
+
+        threading.Thread(target=self._response_worker, daemon=True).start()
+        threading.Thread(target=self._data_worker, daemon=True).start()
+        threading.Thread(target=self._stderr_worker, daemon=True).start()
 
     def show(self) -> dict:
         """
         Get information about the active SiFi Bridge device.
 
-        :raises SifiBridgeError: If no device is currently active. Note that sifibridge
-            stays silent on `show` when no device is selected, so this method waits
-            briefly before raising.
+        :raises SifiBridgeError: If no device is currently active. sifibridge
+            may stay silent on `show` when no device is selected; the request
+            will time out and raise rather than block forever.
         """
-        self.__write("show")
-        return self.get_data_with_key("show", timeout=1.0)["show"]
+        return self._request("show", timeout=1.0)["show"]
 
     def get_active_device(self) -> str:
         """
-        Get the currently active device's ID.
-
-        :returns: Active device ID
+        :returns: Active device ID.
         :raises SifiBridgeError: If no device is currently active.
         """
         return self.show()["id"]
@@ -320,53 +340,41 @@ class SifiBridge:
         """
         Select a device by ID or BLE local name.
 
-        :param name: ID or BLE local name of the device to select.
-
-        :raises `ValueError`: if `name` contains spaces.
+        :raises ValueError: if `name` contains spaces.
         :raises SifiBridgeError: If no device matches `name`.
 
         :return: Active device ID
         """
         if " " in name:
             raise ValueError(f"Spaces are not supported in device name ({name})")
-
-        self.__write(f"select {name}")
-        _ = self.get_data_with_key("select")
+        self._request(f"select {name}")
         return self.get_active_device()
 
     def rename_device(self, name: str | None = None) -> dict:
         """
         Rename the active device. Pass `None` to reset the device's name to its default value.
 
-        :param name: New device name. If `None`, resets the device's name.
-
-        :raises `ValueError`: if `name` contains spaces.
+        :raises ValueError: if `name` contains spaces.
         :raises SifiBridgeError: If no device is currently connected.
 
-        :return: `rename` response from sifibridge.
+        :return: `rename` response payload.
         """
         if name is not None and " " in name:
             raise ValueError(f"Spaces are not supported in device name ({name})")
-
-        if name is None:
-            self.__write("rename --reset")
-        else:
-            self.__write(f"rename {name}")
-        return self.get_data_with_key("rename")["rename"]
+        cmd = "rename --reset" if name is None else f"rename {name}"
+        return self._request(cmd)["rename"]
 
     def list_devices(self, source: ListSources | str) -> list[str]:
         """
         List all devices found from a given `source`.
 
-        :return: Response from SiFi Bridge
-
         :raises ConnectionError: If Bluetooth is off.
         """
         if isinstance(source, str):
             source = ListSources(source)
-        self.__write(f"list {source.value}")
+        resp = self._request(f"list {source.value}")
         self.__check_stderr_for_bluetooth_err()
-        return self.get_data_with_key("list")["list"]["devices"]
+        return resp["list"]["devices"]
 
     def connect(self, handle: DeviceType | str | None = None) -> bool:
         """
@@ -382,17 +390,16 @@ class SifiBridge:
         :return: True if connected, False otherwise.
         :raises ConnectionError: If Bluetooth is off.
         """
-
         if isinstance(handle, DeviceType):
             handle = handle.value
-
-        self.__write(f"connect {handle if handle is not None else ''}")
-        self.__check_stderr_for_bluetooth_err()
         try:
-            return self.get_data_with_key("connect")["connect"]["connected"]
+            resp = self._request(f"connect {handle if handle is not None else ''}")
         except SifiBridgeError as e:
+            self.__check_stderr_for_bluetooth_err()
             logging.info(f"Could not connect to {handle}: {e.message}")
             return False
+        self.__check_stderr_for_bluetooth_err()
+        return resp["connect"]["connected"]
 
     def disconnect(self) -> bool:
         """
@@ -402,17 +409,13 @@ class SifiBridge:
         :return: Connection status response (False after a successful disconnect).
         :raises SifiBridgeError: If there is no device to disconnect.
         """
-        self.__write("disconnect")
-        return self.get_data_with_key("disconnect")["disconnect"]["connected"]
+        return self._request("disconnect")["disconnect"]["connected"]
 
     def set_filters(self, enable: bool) -> dict:
-        """
-        Set state of onboard filtering for all sensors.
-
-        :return: Configuration response
-        """
-        self.__write(f"configure filtering {'on' if enable else 'off'}")
-        return self.get_data_with_key("configure")["configure"]
+        """Set onboard filtering on/off for all sensors."""
+        return self._request(
+            f"configure filtering {'on' if enable else 'off'}"
+        )["configure"]
 
     def configure_sensors(
         self,
@@ -422,56 +425,32 @@ class SifiBridge:
         imu: bool = False,
         ppg: bool = False,
     ):
-        """
-        Configure the enabled sensors.
-
-        :param ecg: True to enable ECG, False to disable
-        :param emg: True to enable EMG, False to disable
-        :param eda: True to enable EDA, False to disable
-        :param imu: True to enable IMU, False to disable
-        :param ppg: True to enable PPG, False to disable
-
-        :return: Configuration response
-        """
-        cmd_parts = ["configure sensors"]
-        cmd_parts.append(f"--ecg {'on' if ecg else 'off'}")
-        cmd_parts.append(f"--emg {'on' if emg else 'off'}")
-        cmd_parts.append(f"--eda {'on' if eda else 'off'}")
-        cmd_parts.append(f"--imu {'on' if imu else 'off'}")
-        cmd_parts.append(f"--ppg {'on' if ppg else 'off'}")
-
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")["configure"]
+        """Configure which sensors are enabled."""
+        cmd = (
+            f"configure sensors"
+            f" --ecg {'on' if ecg else 'off'}"
+            f" --emg {'on' if emg else 'off'}"
+            f" --eda {'on' if eda else 'off'}"
+            f" --imu {'on' if imu else 'off'}"
+            f" --ppg {'on' if ppg else 'off'}"
+        )
+        return self._request(cmd)["configure"]
 
     def set_ble_power(self, power: BleTxPower | str):
-        """
-        Set the BLE transmission power.
-
-        :param power: Device transmission power level to set
-
-        :return: Configuration response
-        """
+        """Set the BLE transmission power."""
         if isinstance(power, str):
             power = BleTxPower(power)
-
-        self.__write(f"configure ble-power {power.value}")
-        return self.get_data_with_key("configure")["configure"]
+        return self._request(f"configure ble-power {power.value}")["configure"]
 
     def set_memory_mode(self, memory_config: MemoryMode | str):
         """
         Configure the device's memory mode.
 
         **NOTE**: See `MemoryMode` for more information.
-
-        :param memory_config: Memory mode to set
-
-        :return: Configuration response
         """
         if isinstance(memory_config, str):
             memory_config = MemoryMode(memory_config)
-
-        self.__write(f"configure memory {memory_config.value}")
-        return self.get_data_with_key("configure")["configure"]
+        return self._request(f"configure memory {memory_config.value}")["configure"]
 
     def configure_ecg(
         self,
@@ -483,36 +462,12 @@ class SifiBridge:
         flo: int = 0,
         fhi: int = 30,
     ) -> dict:
-        """
-        Configure ECG sensor.
-
-        :param state: Enable/disable ECG sensor (True/False)
-        :param fs: Sampling rate in Hz (e.g., 250, 500, 1000)
-        :param dc_notch: Enable/disable DC offset removal filter
-        :param mains_notch: Mains frequency notch filter. Options: None (off), 50 (50 Hz), 60 (60 Hz)
-        :param bandpass: Enable/disable bandpass filter
-        :param flo: Lower cutoff frequency for bandpass filter (Hz)
-        :param fhi: Higher cutoff frequency for bandpass filter (Hz)
-
-        :return: Configuration response
-        """
-        cmd_parts = ["configure ecg"]
-
-        cmd_parts.append(f"--state {'on' if state else 'off'}")
-        cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
-        if mains_notch == 50:
-            cmd_parts.append("--mains-notch 50")
-        elif mains_notch == 60:
-            cmd_parts.append("--mains-notch 60")
-        else:
-            cmd_parts.append("--mains-notch off")
-        cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
-        cmd_parts.append(f"--flo {flo}")
-        cmd_parts.append(f"--fhi {fhi}")
-
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")["configure"]
+        """Configure ECG sensor. See sifibridge `help configure ecg` for full semantics."""
+        return self._request(
+            self._build_sensor_filter_cmd(
+                "ecg", state, fs, dc_notch, mains_notch, bandpass, flo, fhi
+            )
+        )["configure"]
 
     def configure_emg(
         self,
@@ -524,36 +479,12 @@ class SifiBridge:
         flo: int = 20,
         fhi: int = 450,
     ) -> dict:
-        """
-        Configure EMG sensor.
-
-        :param state: Enable/disable EMG sensor (True/False)
-        :param fs: Sampling rate in Hz (e.g., 1000, 2000)
-        :param dc_notch: Enable/disable DC offset removal filter
-        :param mains_notch: Mains frequency notch filter. Options: None (Off), 50 (50 Hz), 60 (60 Hz)
-        :param bandpass: Enable/disable bandpass filter
-        :param flo: Lower cutoff frequency for bandpass filter (Hz)
-        :param fhi: Higher cutoff frequency for bandpass filter (Hz)
-
-        :return: Configuration response
-        """
-        cmd_parts = ["configure emg"]
-
-        cmd_parts.append(f"--state {'on' if state else 'off'}")
-        cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
-        if mains_notch == 50:
-            cmd_parts.append("--mains-notch 50")
-        elif mains_notch == 60:
-            cmd_parts.append("--mains-notch 60")
-        else:
-            cmd_parts.append("--mains-notch off")
-        cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
-        cmd_parts.append(f"--flo {flo}")
-        cmd_parts.append(f"--fhi {fhi}")
-
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")["configure"]
+        """Configure EMG sensor. See sifibridge `help configure emg`."""
+        return self._request(
+            self._build_sensor_filter_cmd(
+                "emg", state, fs, dc_notch, mains_notch, bandpass, flo, fhi
+            )
+        )["configure"]
 
     def configure_eda(
         self,
@@ -567,38 +498,17 @@ class SifiBridge:
         freq: int = 0,
     ) -> dict:
         """
-        Configure EDA/BIOZ sensor. **Warning**: Enabling BIOZ and ECG/EMG at the same time
-        is not recommended as it may cause interference and degrade the quality of ECG/EMG data.
+        Configure EDA/BIOZ sensor.
 
-        :param state: Enable/disable EDA sensor
-        :param fs: Sampling rate in Hz (e.g., 50, 100
-        :param dc_notch: Set DC offset removal filter
-        :param mains_notch: Mains frequency notch filter. Options: None (Off), 50 (50 Hz), 60 (60 Hz)
-        :param bandpass: Enable/disable bandpass filter
-        :param flo: Lower cutoff frequency for bandpass filter (Hz)
-        :param fhi: Higher cutoff frequency for bandpass filter (Hz)
-        :param freq: EDA/BIOZ excitation signal frequency (Hz). 0 for DC measurement
+        **Warning**: Enabling BIOZ and ECG/EMG together may cause interference
+        and degrade ECG/EMG quality.
 
-        :return: Configuration response
+        :param freq: EDA/BIOZ excitation signal frequency (Hz). 0 for DC measurement.
         """
-        cmd_parts = ["configure eda"]
-
-        cmd_parts.append(f"--state {'on' if state else 'off'}")
-        cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--dc-notch {'on' if dc_notch else 'off'}")
-        if mains_notch == 50:
-            cmd_parts.append("--mains-notch 50")
-        elif mains_notch == 60:
-            cmd_parts.append("--mains-notch 60")
-        else:
-            cmd_parts.append("--mains-notch off")
-        cmd_parts.append(f"--bandpass {'on' if bandpass else 'off'}")
-        cmd_parts.append(f"--flo {flo}")
-        cmd_parts.append(f"--fhi {fhi}")
-        cmd_parts.append(f"--freq {freq}")
-
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")["configure"]
+        cmd = self._build_sensor_filter_cmd(
+            "eda", state, fs, dc_notch, mains_notch, bandpass, flo, fhi
+        )
+        return self._request(f"{cmd} --freq {freq}")["configure"]
 
     def configure_ppg(
         self,
@@ -611,36 +521,17 @@ class SifiBridge:
         sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
         avg: int = 1,
     ) -> dict:
-        """
-        Configure PPG sensor.
-
-        :param state: enable PPG sensor
-        :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
-        :param ir: current of IR LED in mA (1-50)
-        :param red: current of R LED in mA (1-50)
-        :param green: current of G LED in mA (1-50)
-        :param blue: current of B LED in mA (1-50)
-        :param sens: light sensor sensitivity. See `PpgSensitivity` for more information
-        :param avg: signal averaging factor for a smoother but less responsive signal [1, 2, 4, 8, 16, 32]
-
-        :return: Configuration response
-        """
+        """Configure PPG sensor. See sifibridge `help configure ppg`."""
         if isinstance(sens, str):
             sens = PpgSensitivity(sens)
-
-        cmd_parts = ["configure ppg"]
-
-        cmd_parts.append(f"--state {'on' if state else 'off'}")
-        cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--iir {ir}")
-        cmd_parts.append(f"--ired {red}")
-        cmd_parts.append(f"--igreen {green}")
-        cmd_parts.append(f"--iblue {blue}")
-        cmd_parts.append(f"--sens {sens.value}")
-        cmd_parts.append(f"--avg {avg}")
-
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")["configure"]
+        cmd = (
+            f"configure ppg"
+            f" --state {'on' if state else 'off'}"
+            f" --fs {fs}"
+            f" --iir {ir} --ired {red} --igreen {green} --iblue {blue}"
+            f" --sens {sens.value} --avg {avg}"
+        )
+        return self._request(cmd)["configure"]
 
     def configure_imu(
         self,
@@ -649,98 +540,85 @@ class SifiBridge:
         accel_range: int = 2,
         gyro_range: int = 16,
     ) -> dict:
-        """
-        Configure IMU sensor.
-
-        :param state: enable IMU sensor
-        :param fs: sampling rate in Hz [50, 100, 200, 400, 800, 1000, 1600, 3200]
-        :param accel_range: accelerometer range (g) [2, 4, 8, 16]
-        :param gyro_range: gyroscope range (degrees per second) [16, 31, 63, 125, 250, 500, 1000, 2000]
-
-        :return: Configuration response
-        """
-
-        cmd_parts = ["configure imu"]
-
-        cmd_parts.append(f"--state {'on' if state else 'off'}")
-        cmd_parts.append(f"--fs {fs}")
-        cmd_parts.append(f"--acc-range {accel_range}")
-        cmd_parts.append(f"--gyro-range {gyro_range}")
-
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("configure")["configure"]
+        """Configure IMU sensor. See sifibridge `help configure imu`."""
+        cmd = (
+            f"configure imu"
+            f" --state {'on' if state else 'off'}"
+            f" --fs {fs}"
+            f" --acc-range {accel_range}"
+            f" --gyro-range {gyro_range}"
+        )
+        return self._request(cmd)["configure"]
 
     def configure_sampling_freqs(self, ecg=500, emg=2000, eda=50, imu=100, ppg=100):
-        """
-        Configure the sampling frequencies [Hz] of biosignal acquisition.
-
-        :return: Configuration response
-        """
-        self.__write(
-            f"configure sampling-rates --ecg {ecg} --emg {emg} --eda {eda} --imu {imu} --ppg {ppg}"
-        )
-        return self.get_data_with_key("configure")
+        """Configure sampling frequencies [Hz] for each biosignal."""
+        return self._request(
+            f"configure sampling-rates --ecg {ecg} --emg {emg} --eda {eda}"
+            f" --imu {imu} --ppg {ppg}"
+        )["configure"]
 
     def set_low_latency_mode(self, on: bool):
         """
         Set the low latency data mode.
 
-        **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly if you need to use this feature.
-
-        :param on: True to use low latency mode, in which packets are sent much faster with data from every sensor as it comes in. False to use the conventional 1 biosignal-batch-per-packet (default)
-
-        :return: Configuration response
+        **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly.
         """
-        streaming = "on" if on else "off"
-        self.__write(f"configure low-latency-mode {streaming}")
-        return self.get_data_with_key("configure")["configure"]
+        return self._request(
+            f"configure low-latency-mode {'on' if on else 'off'}"
+        )["configure"]
 
     def set_night_mode(self, enable: bool):
-        """
-        Enable or disable night mode. When enabled, device LEDs are disabled during acquisition.
-
-        Useful for:
-        - Sleep studies: Minimize light disturbance
-        - Covert monitoring: Reduce visual indicators
-        - Power saving: Disable LEDs to extend battery life
-
-        :param enable: True to enable stealth mode, False to disable
-
-        :return: Configuration response
-        """
-        state = "on" if enable else "off"
-        self.__write(f"configure night-mode {state}")
-        return self.get_data_with_key("configure")["configure"]
+        """Enable/disable night mode (LEDs off during acquisition)."""
+        return self._request(
+            f"configure night-mode {'on' if enable else 'off'}"
+        )["configure"]
 
     def set_motor_intensity(self, level: int):
         """
-        Set the vibration motor intensity level.
+        Set the vibration motor intensity level (1-10).
 
-        Useful for:
-        - Haptic feedback in biofeedback applications
-        - Event markers in experiments
-        - Alert notifications for threshold crossing
-
-        :param level: Intensity level (1-10), where 10 is maximum intensity
-
-        :return: Configuration response
         :raises ValueError: If level is not between 1 and 10
         """
         if not 1 <= level <= 10:
             raise ValueError(
                 f"Motor intensity level must be between 1 and 10, got {level}"
             )
+        return self._request(f"configure motor-intensity {level}")["configure"]
 
-        self.__write(f"configure motor-intensity {level}")
-        return self.get_data_with_key("configure")["configure"]
+    @staticmethod
+    def _build_sensor_filter_cmd(
+        sensor: str,
+        state: bool,
+        fs: int,
+        dc_notch: bool,
+        mains_notch: int | None,
+        bandpass: bool,
+        flo: int,
+        fhi: int,
+    ) -> str:
+        if mains_notch == 50:
+            mains = "--mains-notch 50"
+        elif mains_notch == 60:
+            mains = "--mains-notch 60"
+        else:
+            mains = "--mains-notch off"
+        return (
+            f"configure {sensor}"
+            f" --state {'on' if state else 'off'}"
+            f" --fs {fs}"
+            f" --dc-notch {'on' if dc_notch else 'off'}"
+            f" {mains}"
+            f" --bandpass {'on' if bandpass else 'off'}"
+            f" --flo {flo}"
+            f" --fhi {fhi}"
+        )
 
     def start_memory_download(self) -> int:
         """
-        Start downloading the data stored on BioPoint's onboard memory into the
-        buffering subsystem. The caller should subsequently:
-            - Continuously `self.get_data()` to receive memory packets, OR
-            - Wait for a packet of type `"memory"` with `"status"` set to `"memory_download_completed"`,
-              then use `buffer export` (e.g. via `send_command` or `self._SifiBridge__write`) to save the data.
+        Start downloading the data stored on the device's onboard memory into
+        the buffering subsystem. Callers then either pull `memory` packets via
+        `get_data()` until `is_memory_download_completed(packet)` returns True,
+        or use `buffer_export()` to save the data to file.
 
         :return: Number of kilobytes to download.
 
@@ -749,7 +627,6 @@ class SifiBridge:
         :raise SifiBridgeError: If sifibridge returns an error response.
         """
         active_device = self.get_active_device()
-
         if not self.show()["connected"]:
             raise ConnectionError(f"{active_device} is not connected")
 
@@ -767,80 +644,46 @@ class SifiBridge:
             break
 
         logging.info(f"kB to download: {kb_to_download}")
-
-        self.__write("download-memory")
-        _ = self.get_data_with_key("download_memory")
-
+        self._request("download-memory")
         return kb_to_download
 
     def download_memory_serial(
         self, port: str, output_dir: str, format: str = "csv"
     ) -> bool:
         """
-        Download memory from the device via serial port and export it to file.
-
-        Internally runs `download-memory --serial <port>`, waits for the buffering
-        subsystem to ingest the data, then runs `buffer export` to save it.
-
-        :param port: Serial port to use (e.g., COM3, /dev/ttyUSB0)
-        :param output_dir: Directory to save the downloaded memory data
-        :param format: Output file format. Either `csv` or `hdf5`
-
-        :return: True if download was successful, False otherwise.
-        :raise SifiBridgeError: If sifibridge returns an error during the download.
+        Download memory over serial and export it to file. Internally runs
+        `download-memory --serial <port>` then `buffer export`.
         """
-        self.__write(f"download-memory --serial {port}")
-        _ = self.get_data_with_key("download_memory")
-
+        self._request(f"download-memory --serial {port}")
         active_device = self.get_active_device()
         self.buffer_export(format=format, output_dir=output_dir, device=active_device)
         return True
 
     def send_command(self, command: DeviceCommand | str) -> bool:
         """
-        Send a command to active device.
+        Send a `command <name>` to the active device.
 
-        :param command: Command to send
-
-        :return: True if the active device is still connected after the command.
+        :return: True if the device is still connected after the command.
         :raise SifiBridgeError: If sifibridge returns an error response.
         """
         if isinstance(command, str):
             command = DeviceCommand(command)
-
-        self.__write(f"command {command.value}")
-        return self.get_data_with_key("command")["command"]["connected"]
+        return self._request(f"command {command.value}")["command"]["connected"]
 
     def start(self) -> bool:
-        """
-        Start an acquisition on the active device.
-
-        :return: True if the device is still connected after the command.
-        :raise SifiBridgeError: If sifibridge returns an error response (e.g., no device connected).
-        """
-        self.__write("start")
-        return self.get_data_with_key("start")["start"]["connected"]
+        """Start an acquisition on the active device."""
+        return self._request("start")["start"]["connected"]
 
     def stop(self) -> bool:
         """
-        Stop acquisition on the active device. Does not wait for the BLE confirmation,
-        so leave ~1s before destroying the SifiBridge instance.
-
-        :return: True if the device is still connected after the command.
-        :raise SifiBridgeError: If sifibridge returns an error response.
+        Stop acquisition. Does not wait for the BLE confirmation, so leave ~1s
+        before destroying the SifiBridge instance.
         """
-        self.__write("stop")
-        return self.get_data_with_key("stop")["stop"]["connected"]
+        return self._request("stop")["stop"]["connected"]
 
     def send_event(self) -> dict:
-        """
-        Generate a software event on the active device.
-
-        :return: `event` response from sifibridge.
-        :raise SifiBridgeError: If no device is connected.
-        """
-        self.__write("event")
-        return self.get_data_with_key("event")
+        """Generate a software event on the active device."""
+        return self._request("event")["event"]
 
     def buffer_export(
         self,
@@ -852,75 +695,104 @@ class SifiBridge:
         Export a device's buffered acquisitions to file.
 
         :param format: Output format. Either `csv` or `hdf5`.
-        :param output_dir: Directory to save the exported data (default: current directory).
-        :param device: Device ID or name to export. Defaults to the active device.
-
-        :return: `buffer_export` response from sifibridge.
-        :raise SifiBridgeError: If sifibridge returns an error response.
+        :param output_dir: Directory to save the exported data.
+        :param device: Device ID or name. Defaults to the active device.
         """
         cmd_parts = ["buffer export"]
         if device is not None:
             cmd_parts.append(f"--device {device}")
         cmd_parts.append(f"--dir {output_dir}")
         cmd_parts.append(format)
-        self.__write(" ".join(cmd_parts))
-        return self.get_data_with_key("buffer_export")["buffer_export"]
+        return self._request(" ".join(cmd_parts))["buffer_export"]
 
-    def _read_stdout_worker(self):
+    # ------------------------------------------------------------------
+    # Core IO: one generic request/response, two workers, one data queue
+    # ------------------------------------------------------------------
+
+    def _request(self, line: str, timeout: float | None = None) -> dict:
         """
-        Background worker thread that continuously reads from stdout and puts lines into queue.
-        Runs until the subprocess terminates.
+        Write one REPL line and read exactly one JSON response.
+
+        :param line: REPL command (no trailing newline).
+        :param timeout: Seconds to wait. Defaults to `_DEFAULT_REQUEST_TIMEOUT`.
+        :return: Parsed response dict.
+        :raises SifiBridgeError: On `{"error": ...}` response or timeout.
         """
+        if timeout is None:
+            timeout = self._DEFAULT_REQUEST_TIMEOUT
+
+        logging.debug(f"-> {line}")
+        with self._response_lock:
+            assert self._bridge.stdin is not None
+            self._bridge.stdin.write(f"{line}\n".encode())
+            self._bridge.stdin.flush()
+            try:
+                resp = self._response_queue.get(timeout=timeout)
+            except queue.Empty:
+                raise SifiBridgeError(
+                    f"No response to {line!r} within {timeout}s"
+                )
+        logging.debug(f"<- {resp}")
+        if "error" in resp:
+            raise SifiBridgeError(
+                resp["error"].get("message", "Unknown sifibridge error")
+            )
+        return resp
+
+    def _response_worker(self):
+        """Read JSON lines from sifibridge's stdout into `_response_queue`."""
+        assert self._bridge.stdout is not None
+        try:
+            for raw in iter(self._bridge.stdout.readline, b""):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    self._response_queue.put(json.loads(line))
+                except json.JSONDecodeError:
+                    logging.warning(f"Non-JSON response line ignored: {raw!r}")
+        except Exception as e:
+            logging.error(f"Response worker stopped: {e}")
+
+    def _data_worker(self):
+        """Read newline-delimited JSON sensor packets from the TCP socket."""
+        buf = b""
         try:
             while True:
-                line = self._bridge.stdout.readline()
-                if not line:  # EOF - subprocess terminated
+                chunk = self._data_sock.recv(65536)
+                if not chunk:
                     break
-                self._stdout_queue.put(line.decode())
-        except Exception as e:
-            logging.error(f"Error reading stdout: {e}")
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    try:
+                        self._data_queue.put(json.loads(line))
+                    except json.JSONDecodeError:
+                        logging.warning(f"Non-JSON data line ignored: {line!r}")
+        except OSError as e:
+            logging.info(f"Data worker stopped: {e}")
 
-    def _read_stderr_worker(self):
-        """
-        Background worker thread that continuously reads from stderr and puts lines into queue.
-        Runs until the subprocess terminates.
-        """
+    def _stderr_worker(self):
+        """Buffer stderr lines for BLE-off detection."""
+        assert self._bridge.stderr is not None
         try:
-            while True:
-                line = self._bridge.stderr.readline()
-                if not line:  # EOF - subprocess terminated
-                    break
-                self._stderr_queue.put(line.decode())
+            for raw in iter(self._bridge.stderr.readline, b""):
+                self._stderr_queue.put(raw.decode())
         except Exception as e:
-            logging.error(f"Error reading stderr: {e}")
+            logging.error(f"Stderr worker stopped: {e}")
 
     def clear_data_buffer(self) -> int:
         """
-        Clear all pending data packets from the internal FIFO queue.
+        Drain the internal sensor-data FIFO.
 
-        This is useful to discard accumulated packets, for example:
-        - After calling start() but before beginning actual data collection
-        - To flush stale data after a pause in processing
-        - To reset the queue after an error condition
-
-        :return: Number of packets that were discarded from the queue.
-
-        # Example
-
-        ```python
-        >>> sb = SifiBridge()
-        >>> sb.connect()
-        >>> sb.start()
-        >>> time.sleep(1.0)  # Let data accumulate
-        >>> discarded = sb.clear_data_buffer()  # Clear the buffer
-        >>> print(f"Discarded {discarded} packets")
-        >>> packet = sb.get_ecg()  # Get fresh data
-        ```
+        :return: Number of packets discarded.
         """
         count = 0
         try:
             while True:
-                self._stdout_queue.get_nowait()
+                self._data_queue.get_nowait()
                 count += 1
         except queue.Empty:
             pass
@@ -928,173 +800,54 @@ class SifiBridge:
 
     def get_data(self, timeout: float | None = None) -> dict:
         """
-        Wait for Bridge to return a packet.
+        Pop the next sensor-data packet from the queue.
 
-        :param timeout: Time in seconds to wait for a packet. If `None`, will block indefinitely.
-
-        :return: Packet as a dictionary.
+        :param timeout: Seconds to wait. None to block indefinitely.
+        :return: Packet dict, or `{}` if the timeout elapses.
         """
         try:
-            packet = self._stdout_queue.get(timeout=timeout)
-            logging.info(packet)
-            return json.loads(packet)
+            return self._data_queue.get(timeout=timeout)
         except queue.Empty:
             return {}
 
-    def get_data_with_key(
-        self, keys: str | Iterable[str], timeout: float | None = None
-    ) -> dict:
-        """
-        Wait for Bridge to return a packet with a specific key. Blocks until a packet is received and returns it as a dictionary.
-
-        :param key: Key to wait for. If a string, will wait until the key is found. If an iterable, will wait until all keys are found.
-        :param timeout: Optional total timeout in seconds. If sifibridge stays silent for that long, raise `SifiBridgeError`. Pass `None` to block indefinitely.
-
-        :return: Packet with the requested key(s) as a dictionary.
-
-        :raises SifiBridgeError: If sifibridge returns an `error` response before the requested key is seen, or if `timeout` elapses.
-        """
-        import time
-
-        deadline = None if timeout is None else time.monotonic() + timeout
-
-        def _next_get_timeout() -> float | None:
-            if deadline is None:
-                return None
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise SifiBridgeError(
-                    f"Timed out waiting for sifibridge response with key(s) {keys!r}"
-                )
-            return remaining
-
-        ret = dict()
-        if isinstance(keys, str):
-            while keys not in ret.keys():
-                ret = self.get_data(timeout=_next_get_timeout())
-                if not ret:
-                    raise SifiBridgeError(
-                        f"Timed out waiting for sifibridge response with key '{keys}'"
-                    )
-                self.__raise_if_error(ret)
-        elif isinstance(keys, Iterable):
-            while True:
-                is_ok = False
-                ret = self.get_data(timeout=_next_get_timeout())
-                if not ret:
-                    raise SifiBridgeError(
-                        f"Timed out waiting for sifibridge response with keys {list(keys)!r}"
-                    )
-                self.__raise_if_error(ret)
-                tmp = ret.copy()
-                for i, k in enumerate(keys):
-                    if k not in tmp.keys():
-                        break
-                    elif i == len(keys) - 1:
-                        is_ok = True
-                    else:
-                        tmp = tmp[k]
-                if is_ok:
-                    break
-        return ret
-
-    @staticmethod
-    def __raise_if_error(packet: dict):
-        """Raise `SifiBridgeError` if `packet` is an error response from sifibridge."""
-        if "error" in packet:
-            message = packet["error"].get("message", "Unknown sifibridge error")
-            raise SifiBridgeError(message)
-
-    def get_ecg(self):
-        """
-        Wait for an ECG packet.
-
-        :return: ECG data packet as a dictionary.
-        """
+    def _get_packet_of_type(self, *types: str, timeout: float | None = None) -> dict:
+        """Block until a data packet with `packet_type` in `types` arrives."""
         while True:
-            data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == PacketType.ECG.value:
+            data = self.get_data(timeout=timeout)
+            if not data:
+                return data  # timeout -> empty dict
+            if data.get("packet_type") in types:
                 return data
 
-    def get_emg(self):
-        """
-        Wait for an EMG packet.
+    def get_ecg(self) -> dict:
+        return self._get_packet_of_type(PacketType.ECG.value)
 
-        :return: EMG data packet as a dictionary.
-        """
-        while True:
-            data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] in (
-                PacketType.EMG.value,
-                PacketType.EMG_ARMBAND.value,
-            ):
-                return data
+    def get_emg(self) -> dict:
+        return self._get_packet_of_type(
+            PacketType.EMG.value, PacketType.EMG_ARMBAND.value
+        )
 
-    def get_eda(self):
-        """
-        Wait for an EDA packet.
+    def get_eda(self) -> dict:
+        return self._get_packet_of_type(PacketType.EDA.value)
 
-        :return: EDA data packet as a dictionary.
-        """
-        while True:
-            data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == PacketType.EDA.value:
-                return data
+    def get_imu(self) -> dict:
+        return self._get_packet_of_type(PacketType.IMU.value)
 
-    def get_imu(self):
-        """
-        Wait for an IMU packet.
+    def get_ppg(self) -> dict:
+        return self._get_packet_of_type(PacketType.PPG.value)
 
-        :return: IMU data packet as a dictionary.
-        """
-        while True:
-            data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == PacketType.IMU.value:
-                return data
-
-    def get_ppg(self):
-        """
-        Wait for a PPG packet.
-
-        :return: PPG data packet as a dictionary.
-        """
-        while True:
-            data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == PacketType.PPG.value:
-                return data
-
-    def get_temperature(self):
-        """
-        Wait for a temperature packet.
-
-        :return: Temperature data packet as a dictionary.
-        """
-        while True:
-            data = self.get_data_with_key(["packet_type"])
-            if data["packet_type"] == PacketType.TEMPERATURE.value:
-                return data
+    def get_temperature(self) -> dict:
+        return self._get_packet_of_type(PacketType.TEMPERATURE.value)
 
     def is_memory_download_completed(self, packet: dict) -> bool:
-        """
-        Helper function to check if `packet` indicates that memory download is finished, i.e., `packet["status"] == "memory_download_completed"`.
-
-
-        :return: True if memory download is finished, False otherwise.
-        """
-        if (
-            packet["packet_type"] == PacketType.MEMORY.value
-            and packet["status"] == PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value
-        ):
-            return True
-        else:
-            return False
+        """True if `packet` is the final memory-download packet."""
+        return (
+            packet.get("packet_type") == PacketType.MEMORY.value
+            and packet.get("status") == PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value
+        )
 
     def __check_stderr_for_bluetooth_err(self):
-        """Drain stderr and raise ConnectionError if any line looks like a Bluetooth-off message.
-
-        Raises:
-            ConnectionError: If BLE appears to be off.
-        """
+        """Drain stderr and raise `ConnectionError` if a line looks BLE-related."""
         ble_off = False
         while True:
             try:
@@ -1112,15 +865,22 @@ class SifiBridge:
         if ble_off:
             raise ConnectionError("Bluetooth is off.")
 
-    def __write(self, cmd: str):
-        """Write some data to SiFi Bridge's stdin.
-
-        :param cmd: Message to write.
-        """
-        logging.info(cmd)
-        self._bridge.stdin.write((f"{cmd}\n").encode())
-        self._bridge.stdin.flush()
-
     def __del__(self):
-        self.__write("quit")
-        self._bridge.wait()
+        try:
+            bridge = self._bridge
+        except AttributeError:
+            return
+        try:
+            if bridge.stdin and not bridge.stdin.closed:
+                bridge.stdin.write(b"quit\n")
+                bridge.stdin.flush()
+        except (OSError, ValueError):
+            pass
+        try:
+            self._data_sock.close()
+        except (AttributeError, OSError):
+            pass
+        try:
+            bridge.wait(timeout=2)
+        except sp.TimeoutExpired:
+            bridge.kill()
