@@ -10,4 +10,5 @@ from .sifi_bridge import (
     PpgSensitivity,  # noqa
     ListSources,  # noqa
     SifiBridge,  # noqa
+    SifiBridgeError,  # noqa
 )

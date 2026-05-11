@@ -96,6 +96,21 @@ class SensorChannel(Enum):
     """Temperature sensor channel."""
 
 
+class SifiBridgeError(RuntimeError):
+    """
+    Raised when sifibridge returns an `error` response for a command.
+
+    Starting with sifibridge 2.0.0, every REPL command (except `list`) either
+    returns its own response object as a top-level key (e.g., `{"connect": ...}`)
+    on success, or `{"error": {"message": "..."}}` on failure. This exception
+    surfaces the latter case.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
 class DeviceCommand(Enum):
     """
     Use in tandem with SifiBridge.send_command() to control Sifi device operation.
@@ -116,6 +131,7 @@ class DeviceCommand(Enum):
     ERASE_ONBOARD_MEMORY = "erase-memory"
     DOWNLOAD_ONBOARD_MEMORY = "download-memory"
     START_STATUS_UPDATE = "start-status-update"
+    STOP_STATUS_UPDATE = "stop-status-update"
     OPEN_LED_1 = "open-led1"
     OPEN_LED_2 = "open-led2"
     CLOSE_LED_1 = "close-led1"
@@ -123,14 +139,19 @@ class DeviceCommand(Enum):
     START_MOTOR = "start-motor"
     STOP_MOTOR = "stop-motor"
     POWER_OFF = "power-off"
-    POWER_DEEP_SLEEP = "deep-sleep"
     SET_PPG_CURRENTS = "set-ppg-currents"
     SET_PPG_SENSITIVITY = "set-ppg-sensitivity"
     SET_EMG_MAINS_NOTCH = "set-emg-mains-notch"
     SET_EDA_FREQUENCY = "set-eda-freq"
     SET_EDA_GAIN = "set-eda-gain"
     DOWNLOAD_MEMORY_SERIAL = "download-memory-serial"
-    STOP_STATUS_UPDATE = "stop-status-update"
+    GET_MEMORY_SIZE = "get-memory-size"
+    SET_EMG_SAMPLING_RATE = "set-emg-sampling-rate"
+    SET_DEFAULT_CONFIG = "set-default-config"
+    GET_DEVICE_INFO = "get-device-info"
+    SET_MOTOR_INTENSITY = "set-motor-intensity"
+    SOFTWARE_EVENT = "software-event"
+    RENAME_DEVICE = "rename-device"
 
 
 class DeviceType(Enum):
@@ -275,54 +296,36 @@ class SifiBridge:
         )
         self._stderr_thread.start()
 
-    def show(self):
+    def show(self) -> dict:
         """
-        Get information about the current SiFi Bridge device.
+        Get information about the active SiFi Bridge device.
+
+        :raises SifiBridgeError: If no device is currently active. Note that sifibridge
+            stays silent on `show` when no device is selected, so this method waits
+            briefly before raising.
         """
         self.__write("show")
-        return self.get_data_with_key("show")["show"]
+        return self.get_data_with_key("show", timeout=1.0)["show"]
 
     def get_active_device(self) -> str:
         """
-        Get the currently active device name.
+        Get the currently active device's ID.
 
-        :returns: Active device name
+        :returns: Active device ID
+        :raises SifiBridgeError: If no device is currently active.
         """
         return self.show()["id"]
 
-    def create_device(self, name: str, select: bool = True):
-        """
-        Create a device and optionally select it.
-
-        :param name: Device name
-        :param select: True to select the device after creation
-
-        :raises `ValueError`: if `name` contains spaces.
-
-        :return: Active device name
-        """
-        if " " in name:
-            raise ValueError(f"Spaces are not supported in device name ({name})")
-
-        old_active = self.get_active_device()
-
-        self.__write(f"new {name}")
-        _ = self.get_data_with_key("new")
-
-        if not select:
-            return self.select_device(old_active)
-
-        return self.get_active_device()
-
     def select_device(self, name: str) -> str:
         """
-        Select a device.
+        Select a device by ID or BLE local name.
 
-        :param name: Name of the device to select
+        :param name: ID or BLE local name of the device to select.
 
         :raises `ValueError`: if `name` contains spaces.
+        :raises SifiBridgeError: If no device matches `name`.
 
-        :return: Active device name
+        :return: Active device ID
         """
         if " " in name:
             raise ValueError(f"Spaces are not supported in device name ({name})")
@@ -331,22 +334,25 @@ class SifiBridge:
         _ = self.get_data_with_key("select")
         return self.get_active_device()
 
-    def delete_device(self, name: str) -> str:
+    def rename_device(self, name: str | None = None) -> dict:
         """
-        Delete a device and selects another one.
+        Rename the active device. Pass `None` to reset the device's name to its default value.
 
-        :param name: Name of the manager to delete
+        :param name: New device name. If `None`, resets the device's name.
 
         :raises `ValueError`: if `name` contains spaces.
+        :raises SifiBridgeError: If no device is currently connected.
 
-        :return: Active device name
+        :return: `rename` response from sifibridge.
         """
-        if " " in name:
+        if name is not None and " " in name:
             raise ValueError(f"Spaces are not supported in device name ({name})")
 
-        self.__write(f"delete {name}")
-        _ = self.get_data_with_key("delete")
-        return self.get_active_device()
+        if name is None:
+            self.__write("rename --reset")
+        else:
+            self.__write(f"rename {name}")
+        return self.get_data_with_key("rename")["rename"]
 
     def list_devices(self, source: ListSources | str) -> list[str]:
         """
@@ -364,7 +370,8 @@ class SifiBridge:
 
     def connect(self, handle: DeviceType | str | None = None) -> bool:
         """
-        Try to connect to `handle`.
+        Try to connect to `handle`. A successful connect both creates a session
+        and selects it as the active device.
 
         :param handle: Device handle to connect to. Can be:
 
@@ -372,7 +379,7 @@ class SifiBridge:
             - a `DeviceType` to connect by device name
             - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
-        :return: Connection status
+        :return: True if connected, False otherwise.
         :raises ConnectionError: If Bluetooth is off.
         """
 
@@ -381,20 +388,22 @@ class SifiBridge:
 
         self.__write(f"connect {handle if handle is not None else ''}")
         self.__check_stderr_for_bluetooth_err()
-        ret = self.get_data_with_key("connect")["connect"]["connected"]
-        if ret is False:
-            logging.info(f"Could not connect to {handle}")
-        return ret
+        try:
+            return self.get_data_with_key("connect")["connect"]["connected"]
+        except SifiBridgeError as e:
+            logging.info(f"Could not connect to {handle}: {e.message}")
+            return False
 
     def disconnect(self) -> bool:
         """
-        Disconnect from the active device.
+        Disconnect from the active device. Also removes its session; buffered
+        acquisitions for the device are retained until `buffer clear`.
 
-        :return: Connection status response
+        :return: Connection status response (False after a successful disconnect).
+        :raises SifiBridgeError: If there is no device to disconnect.
         """
         self.__write("disconnect")
-        ret = self.get_data_with_key("disconnect")["disconnect"]["connected"]
-        return ret
+        return self.get_data_with_key("disconnect")["disconnect"]["connected"]
 
     def set_filters(self, enable: bool) -> dict:
         """
@@ -727,14 +736,17 @@ class SifiBridge:
 
     def start_memory_download(self) -> int:
         """
-        Start downloading the data stored on BioPoint's onboard memory. Depending on the output transport, the Python wrapper shall:
-            - Continuously `self.get_data()` if the transport is `stdout` (default)
-            - Wait for a packet of type `"memory"` with the `"status"` key set to `"MemoryDownloadCompleted"`.
+        Start downloading the data stored on BioPoint's onboard memory into the
+        buffering subsystem. The caller should subsequently:
+            - Continuously `self.get_data()` to receive memory packets, OR
+            - Wait for a packet of type `"memory"` with `"status"` set to `"memory_download_completed"`,
+              then use `buffer export` (e.g. via `send_command` or `self._SifiBridge__write`) to save the data.
 
         :return: Number of kilobytes to download.
 
         :raise ConnectionError: If the device is not connected.
         :raise TypeError: If the device does not support memory download.
+        :raise SifiBridgeError: If sifibridge returns an error response.
         """
         active_device = self.get_active_device()
 
@@ -745,7 +757,7 @@ class SifiBridge:
         kb_to_download = None
         while True:
             data = self.get_data()
-            if data["id"] != active_device or data["packet_type"] != "status":
+            if data.get("id") != active_device or data.get("packet_type") != "status":
                 continue
             if "memory_used_kbytes" not in data["data"].keys():
                 raise TypeError(
@@ -756,7 +768,8 @@ class SifiBridge:
 
         logging.info(f"kB to download: {kb_to_download}")
 
-        self.send_command(DeviceCommand.DOWNLOAD_ONBOARD_MEMORY)
+        self.__write("download-memory")
+        _ = self.get_data_with_key("download_memory")
 
         return kb_to_download
 
@@ -764,24 +777,24 @@ class SifiBridge:
         self, port: str, output_dir: str, format: str = "csv"
     ) -> bool:
         """
-        Download the memory from the device via serial port and export it to file.
+        Download memory from the device via serial port and export it to file.
+
+        Internally runs `download-memory --serial <port>`, waits for the buffering
+        subsystem to ingest the data, then runs `buffer export` to save it.
 
         :param port: Serial port to use (e.g., COM3, /dev/ttyUSB0)
         :param output_dir: Directory to save the downloaded memory data
         :param format: Output file format. Either `csv` or `hdf5`
 
         :return: True if download was successful, False otherwise.
+        :raise SifiBridgeError: If sifibridge returns an error during the download.
         """
         self.__write(f"download-memory --serial {port}")
-        resp = self.get_data_with_key("download_memory")
-        if "success" in resp["download_memory"]["message"]:
-            active_device = self.get_active_device()
-            self.__write(
-                f"buffer export --device {active_device} --dir {output_dir} {format}"
-            )
-            return True
-        else:
-            return False
+        _ = self.get_data_with_key("download_memory")
+
+        active_device = self.get_active_device()
+        self.buffer_export(format=format, output_dir=output_dir, device=active_device)
+        return True
 
     def send_command(self, command: DeviceCommand | str) -> bool:
         """
@@ -789,7 +802,8 @@ class SifiBridge:
 
         :param command: Command to send
 
-        :return: True if command was sent successfully, False otherwise.
+        :return: True if the active device is still connected after the command.
+        :raise SifiBridgeError: If sifibridge returns an error response.
         """
         if isinstance(command, str):
             command = DeviceCommand(command)
@@ -799,26 +813,58 @@ class SifiBridge:
 
     def start(self) -> bool:
         """
-        Start an acquisition.
+        Start an acquisition on the active device.
 
-        :return: True if command was sent successfully, False otherwise.
-
-        :raise ConnectionError: If unable to send the command, e.g. if disconnected.
-
+        :return: True if the device is still connected after the command.
+        :raise SifiBridgeError: If sifibridge returns an error response (e.g., no device connected).
         """
-        return self.send_command(DeviceCommand.START_ACQUISITION)
+        self.__write("start")
+        return self.get_data_with_key("start")["start"]["connected"]
 
     def stop(self) -> bool:
         """
-        Stop acquisition. Does not wait for confirmation, so ensure there is enough time (~1s) for the command to reach the BLE device before destroying Sifi Bridge instance.
+        Stop acquisition on the active device. Does not wait for the BLE confirmation,
+        so leave ~1s before destroying the SifiBridge instance.
 
-        :return: True if command was sent successfully, False otherwise.
+        :return: True if the device is still connected after the command.
+        :raise SifiBridgeError: If sifibridge returns an error response.
         """
-        return self.send_command(DeviceCommand.STOP_ACQUISITION)
+        self.__write("stop")
+        return self.get_data_with_key("stop")["stop"]["connected"]
 
     def send_event(self) -> dict:
+        """
+        Generate a software event on the active device.
+
+        :return: `event` response from sifibridge.
+        :raise SifiBridgeError: If no device is connected.
+        """
         self.__write("event")
         return self.get_data_with_key("event")
+
+    def buffer_export(
+        self,
+        format: str = "csv",
+        output_dir: str = ".",
+        device: str | None = None,
+    ) -> dict:
+        """
+        Export a device's buffered acquisitions to file.
+
+        :param format: Output format. Either `csv` or `hdf5`.
+        :param output_dir: Directory to save the exported data (default: current directory).
+        :param device: Device ID or name to export. Defaults to the active device.
+
+        :return: `buffer_export` response from sifibridge.
+        :raise SifiBridgeError: If sifibridge returns an error response.
+        """
+        cmd_parts = ["buffer export"]
+        if device is not None:
+            cmd_parts.append(f"--device {device}")
+        cmd_parts.append(f"--dir {output_dir}")
+        cmd_parts.append(format)
+        self.__write(" ".join(cmd_parts))
+        return self.get_data_with_key("buffer_export")["buffer_export"]
 
     def _read_stdout_worker(self):
         """
@@ -895,22 +941,51 @@ class SifiBridge:
         except queue.Empty:
             return {}
 
-    def get_data_with_key(self, keys: str | Iterable[str]) -> dict:
+    def get_data_with_key(
+        self, keys: str | Iterable[str], timeout: float | None = None
+    ) -> dict:
         """
         Wait for Bridge to return a packet with a specific key. Blocks until a packet is received and returns it as a dictionary.
 
         :param key: Key to wait for. If a string, will wait until the key is found. If an iterable, will wait until all keys are found.
+        :param timeout: Optional total timeout in seconds. If sifibridge stays silent for that long, raise `SifiBridgeError`. Pass `None` to block indefinitely.
 
         :return: Packet with the requested key(s) as a dictionary.
+
+        :raises SifiBridgeError: If sifibridge returns an `error` response before the requested key is seen, or if `timeout` elapses.
         """
+        import time
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        def _next_get_timeout() -> float | None:
+            if deadline is None:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SifiBridgeError(
+                    f"Timed out waiting for sifibridge response with key(s) {keys!r}"
+                )
+            return remaining
+
         ret = dict()
         if isinstance(keys, str):
             while keys not in ret.keys():
-                ret = self.get_data()
+                ret = self.get_data(timeout=_next_get_timeout())
+                if not ret:
+                    raise SifiBridgeError(
+                        f"Timed out waiting for sifibridge response with key '{keys}'"
+                    )
+                self.__raise_if_error(ret)
         elif isinstance(keys, Iterable):
             while True:
                 is_ok = False
-                ret = self.get_data()
+                ret = self.get_data(timeout=_next_get_timeout())
+                if not ret:
+                    raise SifiBridgeError(
+                        f"Timed out waiting for sifibridge response with keys {list(keys)!r}"
+                    )
+                self.__raise_if_error(ret)
                 tmp = ret.copy()
                 for i, k in enumerate(keys):
                     if k not in tmp.keys():
@@ -922,6 +997,13 @@ class SifiBridge:
                 if is_ok:
                     break
         return ret
+
+    @staticmethod
+    def __raise_if_error(packet: dict):
+        """Raise `SifiBridgeError` if `packet` is an error response from sifibridge."""
+        if "error" in packet:
+            message = packet["error"].get("message", "Unknown sifibridge error")
+            raise SifiBridgeError(message)
 
     def get_ecg(self):
         """
@@ -1008,17 +1090,27 @@ class SifiBridge:
             return False
 
     def __check_stderr_for_bluetooth_err(self):
-        """Check if there is any error message from SiFi Bridge's stderr. If there is, assume it's a BLE error.
+        """Drain stderr and raise ConnectionError if any line looks like a Bluetooth-off message.
 
         Raises:
-            ConnectionError: If BLE is off.
+            ConnectionError: If BLE appears to be off.
         """
-        try:
-            error_line = self._stderr_queue.get(timeout=0.1)
+        ble_off = False
+        while True:
+            try:
+                error_line = self._stderr_queue.get_nowait()
+            except queue.Empty:
+                break
             logging.error(error_line)
+            lowered = error_line.lower()
+            if (
+                "bluetooth" in lowered
+                or "ble adapter" in lowered
+                or "ble is" in lowered
+            ):
+                ble_off = True
+        if ble_off:
             raise ConnectionError("Bluetooth is off.")
-        except queue.Empty:
-            pass  # No error message, Bluetooth is likely on
 
     def __write(self, cmd: str):
         """Write some data to SiFi Bridge's stdin.
