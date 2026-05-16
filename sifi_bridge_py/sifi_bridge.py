@@ -8,6 +8,8 @@ import queue
 
 import logging
 
+logger = logging.getLogger(__name__)
+
 
 class PacketType(Enum):
     """
@@ -112,47 +114,14 @@ class SifiBridgeError(RuntimeError):
         self.message = message
 
 
-class DeviceCommand(Enum):
+class SifiBridgeTimeout(SifiBridgeError):
     """
-    Use in tandem with SifiBridge.send_command() to control Sifi device operation.
-
-    # Example
-
-    ```python
-    >>> sb = SifiBridge()
-    >>> sb.connect()
-    >>> sb.send_command(DeviceCommand.OPEN_LED_1) # LED 1 is turned on
-    ```
+    Raised when sifibridge does not respond to a REPL command within the
+    timeout. Subclasses `SifiBridgeError` so existing catches still work, but
+    callers that want to distinguish "operation in progress / no device matched"
+    from a protocol-level error can catch `SifiBridgeTimeout` specifically.
     """
 
-    START_ACQUISITION = "start-acquisition"
-    STOP_ACQUISITION = "stop-acquisition"
-    SET_BLE_POWER = "set-ble-power"
-    SET_ONBOARD_FILTERING = "set-filtering"
-    ERASE_ONBOARD_MEMORY = "erase-memory"
-    DOWNLOAD_ONBOARD_MEMORY = "download-memory"
-    START_STATUS_UPDATE = "start-status-update"
-    STOP_STATUS_UPDATE = "stop-status-update"
-    OPEN_LED_1 = "open-led1"
-    OPEN_LED_2 = "open-led2"
-    CLOSE_LED_1 = "close-led1"
-    CLOSE_LED_2 = "close-led2"
-    START_MOTOR = "start-motor"
-    STOP_MOTOR = "stop-motor"
-    POWER_OFF = "power-off"
-    SET_PPG_CURRENTS = "set-ppg-currents"
-    SET_PPG_SENSITIVITY = "set-ppg-sensitivity"
-    SET_EMG_MAINS_NOTCH = "set-emg-mains-notch"
-    SET_EDA_FREQUENCY = "set-eda-freq"
-    SET_EDA_GAIN = "set-eda-gain"
-    DOWNLOAD_MEMORY_SERIAL = "download-memory-serial"
-    GET_MEMORY_SIZE = "get-memory-size"
-    SET_EMG_SAMPLING_RATE = "set-emg-sampling-rate"
-    SET_DEFAULT_CONFIG = "set-default-config"
-    GET_DEVICE_INFO = "get-device-info"
-    SET_MOTOR_INTENSITY = "set-motor-intensity"
-    SOFTWARE_EVENT = "software-event"
-    RENAME_DEVICE = "rename-device"
 
 
 class DeviceType(Enum):
@@ -391,20 +360,25 @@ class SifiBridge:
 
         :param handle: Device handle to connect to. Can be:
 
-            - `None` to connect to auto-discover and connect to a device
+            - `None` to auto-discover and connect to a device
             - a `DeviceType` to connect by device name
             - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
-        :return: True if connected, False otherwise.
-        :raises ConnectionError: Error happened (i.e., Bluetooth is off)
+        :return: True if connected, False if sifibridge did not find a matching
+            device before the request timed out (the typical "no device around"
+            case — safe to retry).
+        :raises ConnectionError: Bluetooth is off.
+        :raises SifiBridgeError: sifibridge returned an explicit error response
+            (e.g., malformed handle). These are not retry-friendly — fix the
+            input rather than looping.
         """
         if isinstance(handle, DeviceType):
             handle = handle.value
         try:
             resp = self._request(f"connect {handle if handle is not None else ''}")
-        except SifiBridgeError as e:
+        except SifiBridgeTimeout as e:
             self.__check_stderr_for_bluetooth_err()
-            logging.info(f"Could not connect to {handle}: {e.message}")
+            logging.warning(f"Could not connect to {handle}: {e.message}")
             return False
         self.__check_stderr_for_bluetooth_err()
         return resp["connect"]["connected"]
@@ -419,8 +393,8 @@ class SifiBridge:
         """
         return self._request("disconnect")["disconnect"]["connected"]
 
-    def set_filters(self, enable: bool) -> dict:
-        """Set onboard filtering on/off for all sensors."""
+    def set_onboard_filtering(self, enable: bool) -> dict:
+        """Enable or disable the device's onboard filtering for all sensors."""
         return self._request(f"configure filtering {'on' if enable else 'off'}")[
             "configure"
         ]
@@ -642,7 +616,7 @@ class SifiBridge:
         if not self.show()["connected"]:
             raise ConnectionError(f"{active_device} is not connected")
 
-        self.send_command(DeviceCommand.START_STATUS_UPDATE)
+        self.start_status_updates()
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -668,27 +642,88 @@ class SifiBridge:
         return kb_to_download
 
     def download_memory_serial(
-        self, port: str, output_dir: str, format: str = "csv"
-    ) -> bool:
+        self, port: str, output_dir: str, fmt: str = "csv"
+    ) -> dict:
         """
         Download memory over serial and export it to file. Internally runs
         `download-memory --serial <port>` then `buffer export`.
+
+        :param fmt: Output format. Either `csv` or `hdf5`.
+        :return: The `buffer_export` response payload.
         """
         self._request(f"download-memory --serial {port}")
         active_device = self.get_active_device()
-        self.buffer_export(format=format, output_dir=output_dir, device=active_device)
-        return True
+        return self.buffer_export(
+            fmt=fmt, output_dir=output_dir, device=active_device
+        )
 
-    def send_command(self, command: DeviceCommand | str) -> bool:
+    def _send_device_command(self, name: str) -> bool:
+        """Internal: dispatch a raw `command <name>` to the active device."""
+        return self._request(f"command {name}")["command"]["connected"]
+
+    def erase_onboard_memory(self) -> bool:
         """
-        Send a `command <name>` to the active device.
+        Erase the active device's onboard flash.
 
         :return: True if the device is still connected after the command.
-        :raise SifiBridgeError: If sifibridge returns an error response.
+        :raises SifiBridgeError: If sifibridge returns an error response.
         """
-        if isinstance(command, str):
-            command = DeviceCommand(command)
-        return self._request(f"command {command.value}")["command"]["connected"]
+        return self._send_device_command("erase-memory")
+
+    def power_off(self) -> bool:
+        """Power off the active device.
+
+        :return: True if the device is still connected after the command.
+        """
+        return self._send_device_command("power-off")
+
+    def set_led(self, index: int, on: bool) -> bool:
+        """
+        Open or close LED `index` on the active device.
+
+        :param index: 1 or 2.
+        :param on: True to open (turn on), False to close (turn off).
+        :raises ValueError: If `index` is not 1 or 2.
+        """
+        if index not in (1, 2):
+            raise ValueError(f"LED index must be 1 or 2, got {index}")
+        return self._send_device_command(
+            f"{'open' if on else 'close'}-led{index}"
+        )
+
+    def set_motor(self, on: bool) -> bool:
+        """Start or stop the vibration motor on the active device."""
+        return self._send_device_command(
+            "start-motor" if on else "stop-motor"
+        )
+
+    def start_status_updates(self) -> bool:
+        """Begin streaming device status updates as `status` packets."""
+        return self._send_device_command("start-status-update")
+
+    def stop_status_updates(self) -> bool:
+        """Stop streaming device status updates."""
+        return self._send_device_command("stop-status-update")
+
+    def get_memory_size(self) -> bool:
+        """Request the device's onboard memory size.
+
+        The reply is delivered asynchronously as a `status` packet on the
+        data channel — pull it with `get_data()`.
+        """
+        return self._send_device_command("get-memory-size")
+
+    def get_device_info(self) -> bool:
+        """Request device info.
+
+        The reply is delivered asynchronously as a `status` packet on the
+        data channel — pull it with `get_data()`.
+        """
+        return self._send_device_command("get-device-info")
+
+    def reset_to_default_config(self) -> bool:
+        """Reset the active device's sensor configuration to defaults."""
+        return self._send_device_command("set-default-config")
 
     def start(self, all: bool = False) -> bool:
         """
@@ -723,14 +758,14 @@ class SifiBridge:
 
     def buffer_export(
         self,
-        format: str = "csv",
+        fmt: str = "csv",
         output_dir: str = ".",
         device: str | None = None,
     ) -> dict:
         """
         Export a device's buffered acquisitions to file.
 
-        :param format: Output format. Either `csv` or `hdf5`.
+        :param fmt: Output format. Either `csv` or `hdf5`.
         :param output_dir: Directory to save the exported data.
         :param device: Device ID or name. Defaults to the active device.
         """
@@ -738,7 +773,7 @@ class SifiBridge:
         if device is not None:
             cmd_parts.append(f"--device {device}")
         cmd_parts.append(f"--dir {output_dir}")
-        cmd_parts.append(format)
+        cmd_parts.append(fmt)
         return self._request(" ".join(cmd_parts))["buffer_export"]
 
     # ------------------------------------------------------------------
@@ -752,7 +787,8 @@ class SifiBridge:
         :param line: REPL command (no trailing newline).
         :param timeout: Seconds to wait. Defaults to `_DEFAULT_REQUEST_TIMEOUT`.
         :return: Parsed response dict.
-        :raises SifiBridgeError: On `{"error": ...}` response or timeout.
+        :raises SifiBridgeTimeout: If sifibridge does not respond in time.
+        :raises SifiBridgeError: On a `{"error": ...}` response from sifibridge.
         """
         if timeout is None:
             timeout = self._DEFAULT_REQUEST_TIMEOUT
@@ -765,7 +801,9 @@ class SifiBridge:
             try:
                 resp = self._response_queue.get(timeout=timeout)
             except queue.Empty:
-                raise SifiBridgeError(f"No response to {line!r} within {timeout}s")
+                raise SifiBridgeTimeout(
+                    f"No response to {line!r} within {timeout}s"
+                )
         logging.debug(f"<- {resp}")
         if "error" in resp:
             raise SifiBridgeError(

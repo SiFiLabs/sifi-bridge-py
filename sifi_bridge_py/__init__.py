@@ -3,7 +3,6 @@ from .sifi_bridge import (
     PacketType,  # noqa
     PacketStatus,  # noqa
     SensorChannel,  # noqa
-    DeviceCommand,  # noqa
     DeviceType,  # noqa
     BleTxPower,  # noqa
     MemoryMode,  # noqa
@@ -11,4 +10,5 @@ from .sifi_bridge import (
     ListSources,  # noqa
     SifiBridge,  # noqa
     SifiBridgeError,  # noqa
+    SifiBridgeTimeout,  # noqa
 )

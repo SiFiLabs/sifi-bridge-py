@@ -266,12 +266,12 @@ class TestSifiBridge(unittest.TestCase):
         self.assertEqual(sensors["imu"], "on")
         self.assertEqual(sensors["ppg"], "on")
 
-    def test_set_filters(self):
+    def test_set_onboard_filtering(self):
         """Test onboard filtering configuration with value verification."""
-        ret = self.sb.set_filters(True)
+        ret = self.sb.set_onboard_filtering(True)
         self.assertEqual(ret["config"]["filtering"]["state"], "on")
 
-        ret = self.sb.set_filters(False)
+        ret = self.sb.set_onboard_filtering(False)
         self.assertEqual(ret["config"]["filtering"]["state"], "off")
 
     def test_set_low_latency_mode(self):
