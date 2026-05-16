@@ -1,6 +1,7 @@
 import subprocess as sp
 import json
 import socket
+import time
 from enum import Enum
 import threading
 import queue
@@ -235,7 +236,10 @@ class SifiBridge:
     """Parsed JSON lines from stdout (one per command response)."""
 
     _data_queue: queue.Queue
-    """Parsed JSON sensor packets received over the data socket."""
+    """All parsed sensor packets — backs `get_data()`."""
+
+    _typed_queues: dict[str, queue.Queue]
+    """Per-sensor queues — back `get_ecg()`, `get_emg()`, etc."""
 
     _stderr_queue: queue.Queue
     """Stderr lines."""
@@ -248,6 +252,20 @@ class SifiBridge:
 
     _closed: bool = False
     """Set by close() to make teardown idempotent."""
+
+    _PACKET_TYPE_TO_SENSOR: dict[str, str] = {
+        "ecg": "ecg",
+        "emg": "emg",
+        "emg_armband": "emg",
+        "eda": "eda",
+        "imu": "imu",
+        "ppg": "ppg",
+        "temperature": "temperature",
+        "event": "event",
+    }
+    """Maps raw packet_type values to the sensor name used for typed queues.
+    `emg` and `emg_armband` share a single queue because callers of `get_emg()`
+    treat them interchangeably (BioPoint vs SiFiBand)."""
 
     def __init__(
         self,
@@ -298,6 +316,10 @@ class SifiBridge:
 
         self._response_queue = queue.Queue()
         self._data_queue = queue.Queue()
+        self._typed_queues = {
+            sensor: queue.Queue()
+            for sensor in set(self._PACKET_TYPE_TO_SENSOR.values())
+        }
         self._stderr_queue = queue.Queue()
         self._response_lock = threading.Lock()
 
@@ -599,27 +621,39 @@ class SifiBridge:
             f" --fhi {fhi}"
         )
 
-    def start_memory_download(self) -> int:
+    def start_memory_download(self, timeout: float = 10.0) -> int:
         """
         Start downloading the data stored on the device's onboard memory into
         the buffering subsystem. Callers then either pull `memory` packets via
         `get_data()` until `is_memory_download_completed(packet)` returns True,
         or use `buffer_export()` to save the data to file.
 
+        :param timeout: Seconds to wait for the device's initial status packet
+            (the one reporting how much memory will be downloaded). Raises
+            `SifiBridgeError` on expiry rather than blocking forever.
         :return: Number of kilobytes to download.
 
         :raise ConnectionError: If the device is not connected.
         :raise TypeError: If the device does not support memory download.
-        :raise SifiBridgeError: If sifibridge returns an error response.
+        :raise SifiBridgeError: If sifibridge returns an error response, or if
+            the status packet does not arrive within `timeout`.
         """
         active_device = self.get_active_device()
         if not self.show()["connected"]:
             raise ConnectionError(f"{active_device} is not connected")
 
         self.send_command(DeviceCommand.START_STATUS_UPDATE)
-        kb_to_download = None
+        deadline = time.monotonic() + timeout
         while True:
-            data = self.get_data()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SifiBridgeError(
+                    f"Did not receive a status packet from {active_device} "
+                    f"within {timeout}s of starting memory download"
+                )
+            data = self.get_data(timeout=remaining)
+            if not data:
+                continue
             if data.get("id") != active_device or data.get("packet_type") != "status":
                 continue
             if "memory_used_kbytes" not in data["data"].keys():
@@ -755,7 +789,12 @@ class SifiBridge:
             logging.error(f"Response worker stopped: {e}")
 
     def _data_worker(self):
-        """Read newline-delimited JSON sensor packets from the TCP socket."""
+        """Read newline-delimited JSON sensor packets from the TCP socket.
+
+        Each packet is pushed to the generic `_data_queue` (for `get_data()`)
+        and, if its `packet_type` maps to a sensor, also pushed to the matching
+        typed queue (for `get_ecg()`, `get_emg()`, etc.).
+        """
         buf = b""
         try:
             while True:
@@ -768,9 +807,14 @@ class SifiBridge:
                     if not line.strip():
                         continue
                     try:
-                        self._data_queue.put(json.loads(line))
+                        packet = json.loads(line)
                     except json.JSONDecodeError:
                         logging.warning(f"Non-JSON data line ignored: {line!r}")
+                        continue
+                    self._data_queue.put(packet)
+                    sensor = self._PACKET_TYPE_TO_SENSOR.get(packet.get("packet_type"))
+                    if sensor is not None:
+                        self._typed_queues[sensor].put(packet)
         except OSError as e:
             logging.info(f"Data worker stopped: {e}")
 
@@ -785,9 +829,12 @@ class SifiBridge:
 
     def clear_data_buffer(self) -> int:
         """
-        Drain the internal sensor-data FIFO.
+        Drain all internal sensor-data queues (generic + per-sensor).
 
-        :return: Number of packets discarded.
+        :return: Number of packets discarded from the generic queue. Each
+            packet is queued in both the generic queue and (when applicable)
+            its sensor queue, so this is the true per-packet count rather than
+            the sum across queues.
         """
         count = 0
         try:
@@ -796,48 +843,68 @@ class SifiBridge:
                 count += 1
         except queue.Empty:
             pass
+        for q in self._typed_queues.values():
+            try:
+                while True:
+                    q.get_nowait()
+            except queue.Empty:
+                pass
         return count
 
     def get_data(self, timeout: float | None = None) -> dict:
         """
-        Pop the next sensor-data packet from the queue.
+        Pop the next sensor-data packet of any type.
 
         :param timeout: Seconds to wait. None to block indefinitely.
         :return: Packet dict, or `{}` if the timeout elapses.
+
+        **NOTE**: Do not mix `get_data()` with the per-sensor getters
+        (`get_ecg()`, `get_emg()`, etc.) on the same `SifiBridge` instance.
+        Each packet is queued in both the generic queue and its sensor queue,
+        so interleaving the two APIs will return duplicates.
         """
         try:
             return self._data_queue.get(timeout=timeout)
         except queue.Empty:
             return {}
 
-    def _get_packet_of_type(self, *types: str, timeout: float | None = None) -> dict:
-        """Block until a data packet with `packet_type` in `types` arrives."""
-        while True:
-            data = self.get_data(timeout=timeout)
-            if not data:
-                return data  # timeout -> empty dict
-            if data.get("packet_type") in types:
-                return data
+    def _get_sensor_packet(self, sensor: str, timeout: float | None) -> dict:
+        """Pop the next packet from the named sensor queue. `{}` on timeout."""
+        try:
+            return self._typed_queues[sensor].get(timeout=timeout)
+        except queue.Empty:
+            return {}
 
-    def get_ecg(self) -> dict:
-        return self._get_packet_of_type(PacketType.ECG.value)
+    def get_ecg(self, timeout: float | None = None) -> dict:
+        """Pop the next ECG packet. Returns `{}` if `timeout` elapses."""
+        return self._get_sensor_packet("ecg", timeout)
 
-    def get_emg(self) -> dict:
-        return self._get_packet_of_type(
-            PacketType.EMG.value, PacketType.EMG_ARMBAND.value
-        )
+    def get_emg(self, timeout: float | None = None) -> dict:
+        """
+        Pop the next EMG packet (BioPoint `emg` or SiFiBand `emg_armband`).
+        Returns `{}` if `timeout` elapses.
+        """
+        return self._get_sensor_packet("emg", timeout)
 
-    def get_eda(self) -> dict:
-        return self._get_packet_of_type(PacketType.EDA.value)
+    def get_eda(self, timeout: float | None = None) -> dict:
+        """Pop the next EDA packet. Returns `{}` if `timeout` elapses."""
+        return self._get_sensor_packet("eda", timeout)
 
-    def get_imu(self) -> dict:
-        return self._get_packet_of_type(PacketType.IMU.value)
+    def get_imu(self, timeout: float | None = None) -> dict:
+        """Pop the next IMU packet. Returns `{}` if `timeout` elapses."""
+        return self._get_sensor_packet("imu", timeout)
 
-    def get_ppg(self) -> dict:
-        return self._get_packet_of_type(PacketType.PPG.value)
+    def get_ppg(self, timeout: float | None = None) -> dict:
+        """Pop the next PPG packet. Returns `{}` if `timeout` elapses."""
+        return self._get_sensor_packet("ppg", timeout)
 
-    def get_temperature(self) -> dict:
-        return self._get_packet_of_type(PacketType.TEMPERATURE.value)
+    def get_temperature(self, timeout: float | None = None) -> dict:
+        """Pop the next temperature packet. Returns `{}` if `timeout` elapses."""
+        return self._get_sensor_packet("temperature", timeout)
+
+    def get_event(self, timeout: float | None = None) -> dict:
+        """Pop the next event packet. Returns `{}` if `timeout` elapses."""
+        return self._get_sensor_packet("event", timeout)
 
     def is_memory_download_completed(self, packet: dict) -> bool:
         """True if `packet` is the final memory-download packet."""

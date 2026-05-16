@@ -27,6 +27,57 @@ class TestSifiBridge(unittest.TestCase):
             self.assertFalse(sb._closed)
         self.assertTrue(sb._closed)
 
+    def test_getters_return_empty_dict_on_timeout(self):
+        """Per-sensor getters return {} when no data arrives within timeout."""
+        self.sb.clear_data_buffer()
+        self.assertEqual(self.sb.get_ecg(timeout=0.05), {})
+        self.assertEqual(self.sb.get_emg(timeout=0.05), {})
+        self.assertEqual(self.sb.get_eda(timeout=0.05), {})
+        self.assertEqual(self.sb.get_imu(timeout=0.05), {})
+        self.assertEqual(self.sb.get_ppg(timeout=0.05), {})
+        self.assertEqual(self.sb.get_temperature(timeout=0.05), {})
+        self.assertEqual(self.sb.get_data(timeout=0.05), {})
+
+    def test_typed_queue_routing(self):
+        """Each sensor getter only returns packets of its own type, and
+        get_data() should drain interleaved packets in order."""
+        self.sb.clear_data_buffer()
+        # Inject packets directly as if the data worker had received them
+        for packet_type in ("ecg", "emg", "emg_armband", "imu", "ppg", "eda"):
+            packet = {"packet_type": packet_type, "data": {}}
+            self.sb._data_queue.put(packet)
+            sensor = self.sb._PACKET_TYPE_TO_SENSOR[packet_type]
+            self.sb._typed_queues[sensor].put(packet)
+
+        # get_emg() should yield both emg variants
+        first_emg = self.sb.get_emg(timeout=0.1)
+        second_emg = self.sb.get_emg(timeout=0.1)
+        self.assertIn(first_emg.get("packet_type"), ("emg", "emg_armband"))
+        self.assertIn(second_emg.get("packet_type"), ("emg", "emg_armband"))
+        self.assertNotEqual(first_emg.get("packet_type"), second_emg.get("packet_type"))
+
+        # Other getters return their own type
+        self.assertEqual(self.sb.get_ecg(timeout=0.1).get("packet_type"), "ecg")
+        self.assertEqual(self.sb.get_imu(timeout=0.1).get("packet_type"), "imu")
+        self.assertEqual(self.sb.get_ppg(timeout=0.1).get("packet_type"), "ppg")
+        self.assertEqual(self.sb.get_eda(timeout=0.1).get("packet_type"), "eda")
+
+        # And typed queues are now empty
+        self.assertEqual(self.sb.get_ecg(timeout=0.05), {})
+
+    def test_clear_data_buffer_clears_typed_queues(self):
+        """clear_data_buffer empties both the generic queue and per-sensor queues."""
+        for packet_type in ("ecg", "emg", "imu"):
+            packet = {"packet_type": packet_type, "data": {}}
+            self.sb._data_queue.put(packet)
+            self.sb._typed_queues[self.sb._PACKET_TYPE_TO_SENSOR[packet_type]].put(
+                packet
+            )
+        discarded = self.sb.clear_data_buffer()
+        self.assertEqual(discarded, 3)  # generic-queue count
+        for q in self.sb._typed_queues.values():
+            self.assertTrue(q.empty())
+
     def test_show_no_device_raises(self):
         """Test that show() raises when there is no active device (no `new`/default in 2.0.0)."""
         from sifi_bridge_py.sifi_bridge import SifiBridgeError
