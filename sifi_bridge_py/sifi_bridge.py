@@ -219,6 +219,9 @@ class SifiBridge:
     _DEFAULT_REQUEST_TIMEOUT: float = 5.0
     """Default per-command timeout. sifibridge should reply within ms locally; the timeout exists only so misuse (no device, etc.) doesn't hang forever."""
 
+    _DATA_SOCK_CONNECT_TIMEOUT: float = 5.0
+    """How long __init__ waits for sifibridge to dial back into the data socket."""
+
     _closed: bool = False
     """Set by close() to make teardown idempotent."""
 
@@ -256,7 +259,7 @@ class SifiBridge:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         host, port = listener.getsockname()
-        listener.settimeout(5.0)
+        listener.settimeout(self._DATA_SOCK_CONNECT_TIMEOUT)
 
         exec_command = [
             executable,
@@ -268,7 +271,7 @@ class SifiBridge:
         if use_lsl:
             exec_command.append("--lsl")
 
-        logging.info(f"Launching executable: {' '.join(exec_command)}")
+        logger.info(f"Launching executable: {' '.join(exec_command)}")
         self._bridge = sp.Popen(
             exec_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE
         )
@@ -278,7 +281,8 @@ class SifiBridge:
         except socket.timeout:
             self._bridge.kill()
             raise RuntimeError(
-                "sifibridge did not connect to the data socket within 5s"
+                f"sifibridge did not connect to the data socket within "
+                f"{self._DATA_SOCK_CONNECT_TIMEOUT}s"
             )
         finally:
             listener.close()
@@ -350,7 +354,7 @@ class SifiBridge:
         if isinstance(source, str):
             source = ListSources(source)
         resp = self._request(f"list {source.value}")
-        self.__check_stderr_for_bluetooth_err()
+        self._check_stderr_for_bluetooth_err()
         return resp["list"]["devices"]
 
     def connect(self, handle: DeviceType | str | None = None) -> bool:
@@ -377,10 +381,10 @@ class SifiBridge:
         try:
             resp = self._request(f"connect {handle if handle is not None else ''}")
         except SifiBridgeTimeout as e:
-            self.__check_stderr_for_bluetooth_err()
-            logging.warning(f"Could not connect to {handle}: {e.message}")
+            self._check_stderr_for_bluetooth_err()
+            logger.warning(f"Could not connect to {handle}: {e.message}")
             return False
-        self.__check_stderr_for_bluetooth_err()
+        self._check_stderr_for_bluetooth_err()
         return resp["connect"]["connected"]
 
     def disconnect(self) -> bool:
@@ -637,7 +641,7 @@ class SifiBridge:
             kb_to_download = data["data"]["memory_used_kbytes"][0]
             break
 
-        logging.info(f"kB to download: {kb_to_download}")
+        logger.info(f"kB to download: {kb_to_download}")
         self._request("download-memory")
         return kb_to_download
 
@@ -793,7 +797,7 @@ class SifiBridge:
         if timeout is None:
             timeout = self._DEFAULT_REQUEST_TIMEOUT
 
-        logging.debug(f"-> {line}")
+        logger.debug(f"-> {line}")
         with self._response_lock:
             assert self._bridge.stdin is not None
             self._bridge.stdin.write(f"{line}\n".encode())
@@ -804,7 +808,7 @@ class SifiBridge:
                 raise SifiBridgeTimeout(
                     f"No response to {line!r} within {timeout}s"
                 )
-        logging.debug(f"<- {resp}")
+        logger.debug(f"<- {resp}")
         if "error" in resp:
             raise SifiBridgeError(
                 resp["error"].get("message", "Unknown sifibridge error")
@@ -822,9 +826,9 @@ class SifiBridge:
                 try:
                     self._response_queue.put(json.loads(line))
                 except json.JSONDecodeError:
-                    logging.warning(f"Non-JSON response line ignored: {raw!r}")
+                    logger.warning(f"Non-JSON response line ignored: {raw!r}")
         except Exception as e:
-            logging.error(f"Response worker stopped: {e}")
+            logger.error(f"Response worker stopped: {e}")
 
     def _data_worker(self):
         """Read newline-delimited JSON sensor packets from the TCP socket.
@@ -847,14 +851,14 @@ class SifiBridge:
                     try:
                         packet = json.loads(line)
                     except json.JSONDecodeError:
-                        logging.warning(f"Non-JSON data line ignored: {line!r}")
+                        logger.warning(f"Non-JSON data line ignored: {line!r}")
                         continue
                     self._data_queue.put(packet)
                     sensor = self._PACKET_TYPE_TO_SENSOR.get(packet.get("packet_type"))
                     if sensor is not None:
                         self._typed_queues[sensor].put(packet)
         except OSError as e:
-            logging.info(f"Data worker stopped: {e}")
+            logger.info(f"Data worker stopped: {e}")
 
     def _stderr_worker(self):
         """Buffer stderr lines for BLE-off detection."""
@@ -863,7 +867,7 @@ class SifiBridge:
             for raw in iter(self._bridge.stderr.readline, b""):
                 self._stderr_queue.put(raw.decode())
         except Exception as e:
-            logging.error(f"Stderr worker stopped: {e}")
+            logger.error(f"Stderr worker stopped: {e}")
 
     def clear_data_buffer(self) -> int:
         """
@@ -951,7 +955,7 @@ class SifiBridge:
             and packet.get("status") == PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value
         )
 
-    def __check_stderr_for_bluetooth_err(self):
+    def _check_stderr_for_bluetooth_err(self):
         """Drain stderr and raise `ConnectionError` if a line looks BLE-related."""
         ble_off = False
         while True:
@@ -959,7 +963,7 @@ class SifiBridge:
                 error_line = self._stderr_queue.get_nowait()
             except queue.Empty:
                 break
-            logging.error(error_line)
+            logger.error(error_line)
             lowered = error_line.lower()
             if (
                 "bluetooth" in lowered
