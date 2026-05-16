@@ -246,6 +246,9 @@ class SifiBridge:
     _DEFAULT_REQUEST_TIMEOUT: float = 5.0
     """Default per-command timeout. sifibridge should reply within ms locally; the timeout exists only so misuse (no device, etc.) doesn't hang forever."""
 
+    _closed: bool = False
+    """Set by close() to make teardown idempotent."""
+
     def __init__(
         self,
         use_lsl: bool = False,
@@ -366,12 +369,12 @@ class SifiBridge:
 
         :param handle: Device handle to connect to. Can be:
 
-            - `None` to connect to any device
+            - `None` to connect to auto-discover and connect to a device
             - a `DeviceType` to connect by device name
             - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
         :return: True if connected, False otherwise.
-        :raises ConnectionError: If Bluetooth is off.
+        :raises ConnectionError: Error happened (i.e., Bluetooth is off)
         """
         if isinstance(handle, DeviceType):
             handle = handle.value
@@ -653,20 +656,36 @@ class SifiBridge:
             command = DeviceCommand(command)
         return self._request(f"command {command.value}")["command"]["connected"]
 
-    def start(self) -> bool:
-        """Start an acquisition on the active device."""
-        return self._request("start")["start"]["connected"]
-
-    def stop(self) -> bool:
+    def start(self, all: bool = False) -> bool:
         """
-        Stop acquisition. Does not wait for the BLE confirmation, so leave ~1s
-        before destroying the SifiBridge instance.
-        """
-        return self._request("stop")["stop"]["connected"]
+        Start an acquisition.
 
-    def send_event(self) -> dict:
-        """Generate a software event on the active device."""
-        return self._request("event")["event"]
+        :param all: Start on all devices.
+
+        :return: True if success
+        """
+        return self._request("start" + "--all" if all else "")["start"]["connected"]
+
+    def stop(self, all: bool = False) -> bool:
+        """
+        Stop acquisition.
+
+        :param all: Start on all devices.
+
+        :return: True if success
+        """
+        return self._request("stop" + "--all" if all else "")["stop"]["connected"]
+
+    def send_event(self, all: bool = False) -> dict:
+        """
+        Generate a software event.
+        The actual timestamped event will appear in the data stream as an `event` packet.
+
+        :param all: Start on all devices.
+
+        :return: True if success
+        """
+        return self._request("event" + "--all" if all else "")["event"]["connected"]
 
     def buffer_export(
         self,
@@ -846,22 +865,62 @@ class SifiBridge:
         if ble_off:
             raise ConnectionError("Bluetooth is off.")
 
+    def close(self) -> None:
+        """
+        Shut down the sifibridge subprocess and release the data socket.
+
+        Sends a `quit` REPL command, closes stdin, closes the data socket,
+        and waits up to 2s for the subprocess to exit cleanly before
+        killing it. Safe to call multiple times.
+
+        Prefer using `SifiBridge` as a context manager
+        (`with SifiBridge() as sb:`) so this runs automatically.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
+        bridge = getattr(self, "_bridge", None)
+        if bridge is not None:
+            try:
+                if bridge.stdin and not bridge.stdin.closed:
+                    bridge.stdin.write(b"quit\n")
+                    bridge.stdin.flush()
+                    bridge.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+        sock = getattr(self, "_data_sock", None)
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+        if bridge is not None:
+            try:
+                bridge.wait(timeout=2)
+            except sp.TimeoutExpired:
+                bridge.kill()
+                try:
+                    bridge.wait(timeout=1)
+                except sp.TimeoutExpired:
+                    pass
+            for pipe in (bridge.stdout, bridge.stderr):
+                if pipe is not None and not pipe.closed:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+
+    def __enter__(self) -> "SifiBridge":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
     def __del__(self):
         try:
-            bridge = self._bridge
-        except AttributeError:
-            return
-        try:
-            if bridge.stdin and not bridge.stdin.closed:
-                bridge.stdin.write(b"quit\n")
-                bridge.stdin.flush()
-        except (OSError, ValueError):
+            self.close()
+        except Exception:
             pass
-        try:
-            self._data_sock.close()
-        except (AttributeError, OSError):
-            pass
-        try:
-            bridge.wait(timeout=2)
-        except sp.TimeoutExpired:
-            bridge.kill()

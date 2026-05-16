@@ -11,6 +11,22 @@ from sifi_bridge_py.sifi_bridge import (
 class TestSifiBridge(unittest.TestCase):
     sb = sbp.SifiBridge()
 
+    @classmethod
+    def tearDownClass(cls):
+        cls.sb.close()
+
+    def test_close_is_idempotent(self):
+        """close() can be called multiple times without raising."""
+        sb = sbp.SifiBridge()
+        sb.close()
+        sb.close()
+
+    def test_context_manager(self):
+        """SifiBridge can be used as a context manager and closes on exit."""
+        with sbp.SifiBridge() as sb:
+            self.assertFalse(sb._closed)
+        self.assertTrue(sb._closed)
+
     def test_show_no_device_raises(self):
         """Test that show() raises when there is no active device (no `new`/default in 2.0.0)."""
         from sifi_bridge_py.sifi_bridge import SifiBridgeError
