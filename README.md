@@ -40,7 +40,7 @@ uv sync
 
 **NOTE** If you add new enums or types, re-export them in `sifi_bridge_py/__init__.py`.
 
-### Publishing `sifibridge-bin` (new CLI binary)
+### Publishing `sifibridge-bin`
 
 1. Update `version` in `sifibridge-bin/pyproject.toml`
 2. Build wheels: `cd sifibridge-bin && python scripts/build_wheels.py <release-tag>`

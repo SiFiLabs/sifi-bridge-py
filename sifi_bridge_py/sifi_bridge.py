@@ -157,6 +157,8 @@ class DeviceCommand(Enum):
 
 class DeviceType(Enum):
     """
+    NOTE: This enum is considered legacy since the custom naming functionality is supported.
+
     Use in tandem with SifiBridge.connect() to connect to SiFi Devices via BLE name.
     """
 
@@ -222,10 +224,9 @@ class SifiBridge:
     """
     Wrapper over the `sifibridge` CLI.
 
-    Stdout is used strictly as a request/reply channel for REPL commands
-    (one JSON object per command). Sensor data is streamed separately over
-    a local TCP socket via `--tcp-out`, so it never interleaves with command
-    responses. This makes every command method a simple write-then-read.
+    Stdout is used as a request/reply channel for REPL commands.
+    Sensor data is streamed separately over
+    a local TCP socket via `--tcp-out`.
     """
 
     _bridge: sp.Popen[bytes]
@@ -238,7 +239,7 @@ class SifiBridge:
     """Parsed JSON sensor packets received over the data socket."""
 
     _stderr_queue: queue.Queue
-    """Raw stderr lines for BLE-off detection."""
+    """Stderr lines."""
 
     _response_lock: threading.Lock
     """Serializes (write to stdin) → (read from response queue) pairs."""
@@ -248,15 +249,11 @@ class SifiBridge:
 
     def __init__(
         self,
-        publishers: None | str | Iterable[str] = None,
         use_lsl: bool = False,
     ):
         """
         Spawn a sifibridge subprocess and connect to its data channel.
 
-        :param publishers: Additional publishers, e.g. `"udp://<ip>:<port>"`.
-            The `tcp` publisher is reserved for internal use by this wrapper
-            and will be rejected if provided.
         :param use_lsl: If True, pass `--lsl` so sifibridge also streams data
             to Lab Streaming Layer outlets.
         """
@@ -278,19 +275,6 @@ class SifiBridge:
             "--tcp-out",
             f"{host}:{port}",
         ]
-
-        if publishers is not None:
-            if isinstance(publishers, str):
-                publishers = [publishers]
-            for publisher in publishers:
-                scheme, parg = publisher.split("://")
-                if scheme == "tcp":
-                    raise ValueError(
-                        "tcp publishers are reserved for internal use by SifiBridge; "
-                        "pass a udp:// publisher or use_lsl=True instead"
-                    )
-                exec_command.append(f"--{scheme}-out")
-                exec_command.append(parg)
 
         if use_lsl:
             exec_command.append("--lsl")
@@ -413,9 +397,9 @@ class SifiBridge:
 
     def set_filters(self, enable: bool) -> dict:
         """Set onboard filtering on/off for all sensors."""
-        return self._request(
-            f"configure filtering {'on' if enable else 'off'}"
-        )["configure"]
+        return self._request(f"configure filtering {'on' if enable else 'off'}")[
+            "configure"
+        ]
 
     def configure_sensors(
         self,
@@ -563,15 +547,15 @@ class SifiBridge:
 
         **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly.
         """
-        return self._request(
-            f"configure low-latency-mode {'on' if on else 'off'}"
-        )["configure"]
+        return self._request(f"configure low-latency-mode {'on' if on else 'off'}")[
+            "configure"
+        ]
 
     def set_night_mode(self, enable: bool):
         """Enable/disable night mode (LEDs off during acquisition)."""
-        return self._request(
-            f"configure night-mode {'on' if enable else 'off'}"
-        )["configure"]
+        return self._request(f"configure night-mode {'on' if enable else 'off'}")[
+            "configure"
+        ]
 
     def set_motor_intensity(self, level: int):
         """
@@ -729,9 +713,7 @@ class SifiBridge:
             try:
                 resp = self._response_queue.get(timeout=timeout)
             except queue.Empty:
-                raise SifiBridgeError(
-                    f"No response to {line!r} within {timeout}s"
-                )
+                raise SifiBridgeError(f"No response to {line!r} within {timeout}s")
         logging.debug(f"<- {resp}")
         if "error" in resp:
             raise SifiBridgeError(
