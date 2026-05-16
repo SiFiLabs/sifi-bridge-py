@@ -1,7 +1,6 @@
 import subprocess as sp
 import json
 import socket
-from collections.abc import Iterable
 from enum import Enum
 import threading
 import queue
