@@ -597,16 +597,13 @@ class SifiBridge:
             f" --fhi {fhi}"
         )
 
-    def download_memory_ble(
-        self, output_dir: str, fmt: str = "csv", timeout: float = 120
-    ) -> dict:
+    def download_memory_ble(self, output_dir: str, fmt: str = "csv") -> dict:
         """
-        Trigger a BLE memory download, block until it completes, and export
-        the downloaded data to disk.
+        Download memory over BLE and export it to file. This is a blocking function,
+        although sifibridge has an internal timeout of ~5s in case the download fails.
 
         :param output_dir: Directory to save the exported data.
         :param fmt: Output format. Either ``"csv"`` or ``"hdf5"``.
-        :param timeout: Memory download timeout. Set according to the amount of data to download.
 
         TODO: provide rule of thumb timeouts.
 
@@ -614,27 +611,24 @@ class SifiBridge:
         :raises SifiBridgeTimeout: If the completion packet does not arrive
             within ``timeout``.
         """
-        self._request("download-memory", timeout=timeout)
+        self._request("download-memory", timeout=3600 * 12)
         active_device = self.get_active_device()
         return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
 
     def download_memory_serial(
-        self, port: str, output_dir: str, fmt: str = "csv", timeout: float = 120
+        self, port: str, output_dir: str, fmt: str = "csv"
     ) -> dict:
         """
-        Download memory over serial and export it to file. Internally runs
-        `download-memory --serial <port>` then `buffer export`.
+        Download memory over serial and export it to file. This is a blocking function,
+        although sifibridge has an internal timeout of ~5s in case the download fails.
 
         :param port: Serial port to use.
         :param output_dir: Data output directory.
         :param fmt: Output format. Either `csv` or `hdf5`.
-        :param timeout: Memory download timeout. Set according to the amount of data to download.
-
-        TODO: provide rule of thumb timeouts.
 
         :return: The `buffer_export` response payload.
         """
-        self._request(f"download-memory --serial {port}", timeout=timeout)
+        self._request(f"download-memory --serial {port}", timeout=3600 * 4)
         active_device = self.get_active_device()
         return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
 
