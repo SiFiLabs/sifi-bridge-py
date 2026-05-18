@@ -893,13 +893,6 @@ class SifiBridge:
         """Pop the next event packet. Returns `{}` if `timeout` elapses."""
         return self._get_sensor_packet("event", timeout)
 
-    def is_memory_download_completed(self, packet: dict) -> bool:
-        """True if `packet` is the final memory-download packet."""
-        return (
-            packet.get("packet_type") == PacketType.MEMORY.value
-            and packet.get("status") == PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value
-        )
-
     def _check_stderr_for_bluetooth_err(self):
         """Drain stderr and raise `ConnectionError` if a line looks BLE-related."""
         ble_off = False
