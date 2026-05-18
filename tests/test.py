@@ -11,10 +11,79 @@ from sifi_bridge_py.sifi_bridge import (
 class TestSifiBridge(unittest.TestCase):
     sb = sbp.SifiBridge()
 
-    def test_show(self):
-        """Test that show() returns device information."""
-        result = self.sb.show()
-        self.assertIn("connected", result.keys())
+    @classmethod
+    def tearDownClass(cls):
+        cls.sb.close()
+
+    def test_close_is_idempotent(self):
+        """close() can be called multiple times without raising."""
+        sb = sbp.SifiBridge()
+        sb.close()
+        sb.close()
+
+    def test_context_manager(self):
+        """SifiBridge can be used as a context manager and closes on exit."""
+        with sbp.SifiBridge() as sb:
+            self.assertFalse(sb._closed)
+        self.assertTrue(sb._closed)
+
+    def test_getters_return_empty_dict_on_timeout(self):
+        """Per-sensor getters return {} when no data arrives within timeout."""
+        self.sb.clear_data_buffer()
+        self.assertEqual(self.sb.get_ecg(timeout=0.05), {})
+        self.assertEqual(self.sb.get_emg(timeout=0.05), {})
+        self.assertEqual(self.sb.get_eda(timeout=0.05), {})
+        self.assertEqual(self.sb.get_imu(timeout=0.05), {})
+        self.assertEqual(self.sb.get_ppg(timeout=0.05), {})
+        self.assertEqual(self.sb.get_temperature(timeout=0.05), {})
+        self.assertEqual(self.sb.get_data(timeout=0.05), {})
+
+    def test_typed_queue_routing(self):
+        """Each sensor getter only returns packets of its own type, and
+        get_data() should drain interleaved packets in order."""
+        self.sb.clear_data_buffer()
+        # Inject packets directly as if the data worker had received them
+        for packet_type in ("ecg", "emg", "emg_armband", "imu", "ppg", "eda"):
+            packet = {"packet_type": packet_type, "data": {}}
+            self.sb._data_queue.put(packet)
+            sensor = self.sb._PACKET_TYPE_TO_SENSOR[packet_type]
+            self.sb._typed_queues[sensor].put(packet)
+
+        # get_emg() should yield both emg variants
+        first_emg = self.sb.get_emg(timeout=0.1)
+        second_emg = self.sb.get_emg(timeout=0.1)
+        self.assertIn(first_emg.get("packet_type"), ("emg", "emg_armband"))
+        self.assertIn(second_emg.get("packet_type"), ("emg", "emg_armband"))
+        self.assertNotEqual(first_emg.get("packet_type"), second_emg.get("packet_type"))
+
+        # Other getters return their own type
+        self.assertEqual(self.sb.get_ecg(timeout=0.1).get("packet_type"), "ecg")
+        self.assertEqual(self.sb.get_imu(timeout=0.1).get("packet_type"), "imu")
+        self.assertEqual(self.sb.get_ppg(timeout=0.1).get("packet_type"), "ppg")
+        self.assertEqual(self.sb.get_eda(timeout=0.1).get("packet_type"), "eda")
+
+        # And typed queues are now empty
+        self.assertEqual(self.sb.get_ecg(timeout=0.05), {})
+
+    def test_clear_data_buffer_clears_typed_queues(self):
+        """clear_data_buffer empties both the generic queue and per-sensor queues."""
+        for packet_type in ("ecg", "emg", "imu"):
+            packet = {"packet_type": packet_type, "data": {}}
+            self.sb._data_queue.put(packet)
+            self.sb._typed_queues[self.sb._PACKET_TYPE_TO_SENSOR[packet_type]].put(
+                packet
+            )
+        discarded = self.sb.clear_data_buffer()
+        self.assertEqual(discarded, 3)  # generic-queue count
+        for q in self.sb._typed_queues.values():
+            self.assertTrue(q.empty())
+
+    def test_show_no_device_raises(self):
+        """Test that show() raises when there is no active device (no `new`/default in 2.0.0)."""
+        from sifi_bridge_py.sifi_bridge import SifiBridgeError
+
+        with self.assertRaises(SifiBridgeError):
+            self.sb.show()
 
     def test_configure_ecg(self):
         """Test ECG configuration with value verification."""
@@ -197,12 +266,12 @@ class TestSifiBridge(unittest.TestCase):
         self.assertEqual(sensors["imu"], "on")
         self.assertEqual(sensors["ppg"], "on")
 
-    def test_set_filters(self):
+    def test_set_onboard_filtering(self):
         """Test onboard filtering configuration with value verification."""
-        ret = self.sb.set_filters(True)
+        ret = self.sb.set_onboard_filtering(True)
         self.assertEqual(ret["config"]["filtering"]["state"], "on")
 
-        ret = self.sb.set_filters(False)
+        ret = self.sb.set_onboard_filtering(False)
         self.assertEqual(ret["config"]["filtering"]["state"], "off")
 
     def test_set_low_latency_mode(self):
@@ -249,53 +318,19 @@ class TestSifiBridge(unittest.TestCase):
         serial_list = self.sb.list_devices(sbp.ListSources.SERIAL)
         self.assertIsInstance(serial_list, list)
 
-    def test_select_device(self):
-        """Test device selection."""
-        devs = self.sb.list_devices(sbp.ListSources.DEVICES)
-        self.assertGreater(len(devs), 0, "No devices available to select")
+    def test_select_no_match_raises(self):
+        """select on a non-existent name should surface an `error` response as SifiBridgeError."""
+        from sifi_bridge_py.sifi_bridge import SifiBridgeError
 
-        self.sb.select_device(devs[0])
-        self.assertEqual(self.sb.get_active_device(), devs[0])
+        with self.assertRaises(SifiBridgeError):
+            self.sb.select_device("definitely-not-a-real-device")
 
-    def test_send_event(self):
-        """Test event generation."""
-        ret = self.sb.send_event()
-        self.assertIn("event", ret.keys())
+    def test_send_event_without_device_raises(self):
+        """event without a connected device should surface an `error` response."""
+        from sifi_bridge_py.sifi_bridge import SifiBridgeError
 
-    def test_create_device_no_select(self):
-        """Test device creation without selecting it."""
-        test_device_name = "create_device_no_select"
-
-        self.sb.select_device("device")
-        active_device = self.sb.get_active_device()
-
-        self.sb.create_device(test_device_name, select=False)
-
-        self.assertEqual(self.sb.get_active_device(), active_device)
-
-    def test_create_device_with_select(self):
-        """Test device creation with automatic selection."""
-        test_device_name = "create_device_with_select"
-
-        self.sb.select_device("device")
-
-        self.sb.create_device(test_device_name, select=True)
-
-        self.assertEqual(self.sb.get_active_device(), test_device_name)
-
-    def test_delete_device(self):
-        """Test device deletion."""
-        test_device_name = "delete_device"
-
-        self.sb.create_device(test_device_name, select=True)
-
-        devices = self.sb.list_devices(sbp.ListSources.DEVICES)
-        self.assertIn(test_device_name, devices)
-
-        self.sb.delete_device(test_device_name)
-
-        devices = self.sb.list_devices(sbp.ListSources.DEVICES)
-        self.assertNotIn(test_device_name, devices)
+        with self.assertRaises(SifiBridgeError):
+            self.sb.send_event()
 
 
 if __name__ == "__main__":

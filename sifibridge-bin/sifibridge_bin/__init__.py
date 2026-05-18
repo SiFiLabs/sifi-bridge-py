@@ -2,6 +2,7 @@ import os
 import sys
 import stat
 from pathlib import Path
+import logging
 
 # Override with SIFIBRIDGE_EXE env var for development
 _ENV_OVERRIDE = "SIFIBRIDGE_EXE"
@@ -40,4 +41,5 @@ def get_executable() -> str:
     if sys.platform != "win32":
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
 
+    logging.info(f"using executable {str(exe)}")
     return str(exe)

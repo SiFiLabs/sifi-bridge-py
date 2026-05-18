@@ -17,10 +17,10 @@ def main():
     while True:
         data = sb.get_data()
 
-        if data["status"] == sbp.PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value:
+        if data.get("status") == sbp.PacketStatus.MEMORY_DOWNLOAD_COMPLETED.value:
             break
 
-    sb.send_command(f"buffer export -d {sb.active_device} --dir {OUTPUT_DIR} csv")
+    sb.buffer_export(format="csv", output_dir=OUTPUT_DIR, device=sb.get_active_device())
     print("Finished downloading device memory:")
     for f in os.listdir(OUTPUT_DIR):
         if f.endswith(".csv"):
