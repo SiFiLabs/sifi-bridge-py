@@ -356,7 +356,7 @@ class SifiBridge:
         self._check_stderr_for_bluetooth_err()
         return resp["list"]["devices"]
 
-    def connect(self, handle: str | None = None) -> bool:
+    def connect(self, handle: str | None = None, timeout: float = 10.0) -> bool:
         """
         Try to connect to `handle`. A successful connect both creates a session
         and selects it as the active device.
@@ -366,6 +366,7 @@ class SifiBridge:
             - `None` to auto-connect
             - the device's name
             - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
+        :param timeout: Connection timeout
 
         :return: True if connected, False if connection failed
         :raises ConnectionError: Bluetooth is off.
@@ -375,7 +376,7 @@ class SifiBridge:
         """
         try:
             resp = self._request(
-                f"connect {handle if handle is not None else ''}", 10.0
+                f"connect {handle if handle is not None else ''}", timeout
             )
         except SifiBridgeTimeout as e:
             self._check_stderr_for_bluetooth_err()
@@ -393,12 +394,6 @@ class SifiBridge:
         :raises SifiBridgeError: If there is no device to disconnect.
         """
         return self._request("disconnect")["disconnect"]["connected"]
-
-    def set_onboard_filtering(self, enable: bool) -> dict:
-        """Enable or disable the device's onboard filtering for all sensors."""
-        return self._request(f"configure filtering {'on' if enable else 'off'}")[
-            "configure"
-        ]
 
     def configure_sensors(
         self,
@@ -418,22 +413,6 @@ class SifiBridge:
             f" --ppg {'on' if ppg else 'off'}"
         )
         return self._request(cmd)["configure"]
-
-    def set_ble_power(self, power: BleTxPower | str):
-        """Set the BLE transmission power."""
-        if isinstance(power, str):
-            power = BleTxPower(power)
-        return self._request(f"configure ble-power {power.value}")["configure"]
-
-    def set_memory_mode(self, memory_config: MemoryMode | str):
-        """
-        Configure the device's memory mode.
-
-        **NOTE**: See `MemoryMode` for more information.
-        """
-        if isinstance(memory_config, str):
-            memory_config = MemoryMode(memory_config)
-        return self._request(f"configure memory {memory_config.value}")["configure"]
 
     def configure_ecg(
         self,
@@ -533,12 +512,28 @@ class SifiBridge:
         )
         return self._request(cmd)["configure"]
 
+    def set_onboard_filtering(self, enable: bool) -> dict:
+        """Enable or disable the device's onboard filtering for all sensors."""
+        return self._request(f"configure filtering {'on' if enable else 'off'}")[
+            "configure"
+        ]
+
     def configure_sampling_freqs(self, ecg=500, emg=2000, eda=50, imu=100, ppg=100):
         """Configure sampling frequencies [Hz] for each biosignal."""
         return self._request(
             f"configure sampling-rates --ecg {ecg} --emg {emg} --eda {eda}"
             f" --imu {imu} --ppg {ppg}"
         )["configure"]
+
+    def set_memory_mode(self, memory_config: MemoryMode | str):
+        """
+        Configure the device's memory mode.
+
+        **NOTE**: See `MemoryMode` for more information.
+        """
+        if isinstance(memory_config, str):
+            memory_config = MemoryMode(memory_config)
+        return self._request(f"configure memory {memory_config.value}")["configure"]
 
     def set_low_latency_mode(self, on: bool):
         """
@@ -549,6 +544,12 @@ class SifiBridge:
         return self._request(f"configure low-latency-mode {'on' if on else 'off'}")[
             "configure"
         ]
+
+    def set_ble_power(self, power: BleTxPower | str):
+        """Set the BLE transmission power."""
+        if isinstance(power, str):
+            power = BleTxPower(power)
+        return self._request(f"configure ble-power {power.value}")["configure"]
 
     def set_night_mode(self, enable: bool):
         """Enable/disable night mode (LEDs off during acquisition)."""
@@ -598,6 +599,8 @@ class SifiBridge:
 
     def start_memory_download(self, timeout: float = 10.0) -> int:
         """
+        TODO: rework to support the new blocking ble download
+
         Start downloading the data stored on the device's onboard memory into
         the buffering subsystem. Callers then either pull `memory` packets via
         `get_data()` until `is_memory_download_completed(packet)` returns True,
@@ -664,7 +667,7 @@ class SifiBridge:
         """
         Erase the active device's onboard flash.
 
-        :return: True if the device is still connected after the command.
+        :return: True if success, else False
         :raises SifiBridgeError: If sifibridge returns an error response.
         """
         return self._send_device_command("erase-memory")
@@ -692,35 +695,15 @@ class SifiBridge:
         """Start or stop the vibration motor on the active device."""
         return self._send_device_command("start-motor" if on else "stop-motor")
 
-    def start_status_updates(self) -> bool:
-        """Begin streaming device status updates as `status` packets."""
-        return self._send_device_command("start-status-update")
-
-    def stop_status_updates(self) -> bool:
-        """Stop streaming device status updates."""
-        return self._send_device_command("stop-status-update")
-
-    def get_memory_size(self) -> bool:
-        """Request the device's onboard memory size.
-
-        The reply is delivered asynchronously as a `status` packet on the
-        data channel — pull it with `get_data()`.
+    def set_status_updates(self, on: bool) -> bool:
         """
-        return self._send_device_command("get-memory-size")
+        Enable or stop status updates.
 
-    def get_device_info(self) -> bool:
-        """Request device info.
-
-        The reply is delivered asynchronously as a `status` packet on the
-        data channel — pull it with `get_data()`.
+        Status updates are periodic (~1s) data packets containing information such as memory used, memory size, etc.
         """
-        return self._send_device_command("get-device-info")
+        return self._send_device_command(f"{'start' if on else 'stop'}-status-update")
 
-    def reset_to_default_config(self) -> bool:
-        """Reset the active device's sensor configuration to defaults."""
-        return self._send_device_command("set-default-config")
-
-    def start(self, all: bool = False) -> bool:
+    def start(self, all: bool = True) -> bool:
         """
         Start an acquisition.
 
@@ -743,7 +726,7 @@ class SifiBridge:
     def send_event(self, all: bool = False) -> dict:
         """
         Generate a software event.
-        The actual timestamped event will appear in the data stream as an `event` packet.
+        The event will appear in the data stream as an `event` packet.
 
         :param all: Start on all devices.
 
