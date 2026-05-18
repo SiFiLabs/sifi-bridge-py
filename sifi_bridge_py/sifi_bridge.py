@@ -597,65 +597,44 @@ class SifiBridge:
             f" --fhi {fhi}"
         )
 
-    def start_memory_download(self, timeout: float = 10.0) -> int:
+    def download_memory_ble(
+        self, output_dir: str, fmt: str = "csv", timeout: float = 120
+    ) -> dict:
         """
-        TODO: rework to support the new blocking ble download
+        Trigger a BLE memory download, block until it completes, and export
+        the downloaded data to disk.
 
-        Start downloading the data stored on the device's onboard memory into
-        the buffering subsystem. Callers then either pull `memory` packets via
-        `get_data()` until `is_memory_download_completed(packet)` returns True,
-        or use `buffer_export()` to save the data to file.
+        :param output_dir: Directory to save the exported data.
+        :param fmt: Output format. Either ``"csv"`` or ``"hdf5"``.
+        :param timeout: Memory download timeout. Set according to the amount of data to download.
 
-        :param timeout: Seconds to wait for the device's initial status packet
-            (the one reporting how much memory will be downloaded). Raises
-            `SifiBridgeError` on expiry rather than blocking forever.
-        :return: Number of kilobytes to download.
+        TODO: provide rule of thumb timeouts.
 
-        :raise ConnectionError: If the device is not connected.
-        :raise TypeError: If the device does not support memory download.
-        :raise SifiBridgeError: If sifibridge returns an error response, or if
-            the status packet does not arrive within `timeout`.
+        :return: The ``buffer_export`` response payload.
+        :raises SifiBridgeTimeout: If the completion packet does not arrive
+            within ``timeout``.
         """
+        self._request("download-memory", timeout=timeout)
         active_device = self.get_active_device()
-        if not self.show()["connected"]:
-            raise ConnectionError(f"{active_device} is not connected")
-
-        self.start_status_updates()
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise SifiBridgeError(
-                    f"Did not receive a status packet from {active_device} "
-                    f"within {timeout}s of starting memory download"
-                )
-            data = self.get_data(timeout=remaining)
-            if not data:
-                continue
-            if data.get("id") != active_device or data.get("packet_type") != "status":
-                continue
-            if "memory_used_kbytes" not in data["data"].keys():
-                raise TypeError(
-                    f"Attempted to download memory from an unsupported device ({data['device']})."
-                )
-            kb_to_download = data["data"]["memory_used_kbytes"][0]
-            break
-
-        logger.info(f"kB to download: {kb_to_download}")
-        self._request("download-memory")
-        return kb_to_download
+        return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
 
     def download_memory_serial(
-        self, port: str, output_dir: str, fmt: str = "csv"
+        self, port: str, output_dir: str, fmt: str = "csv", timeout: float = 120
     ) -> dict:
         """
         Download memory over serial and export it to file. Internally runs
         `download-memory --serial <port>` then `buffer export`.
 
+        :param port: Serial port to use.
+        :param output_dir: Data output directory.
         :param fmt: Output format. Either `csv` or `hdf5`.
+        :param timeout: Memory download timeout. Set according to the amount of data to download.
+
+        TODO: provide rule of thumb timeouts.
+
         :return: The `buffer_export` response payload.
         """
-        self._request(f"download-memory --serial {port}")
+        self._request(f"download-memory --serial {port}", timeout=timeout)
         active_device = self.get_active_device()
         return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
 
