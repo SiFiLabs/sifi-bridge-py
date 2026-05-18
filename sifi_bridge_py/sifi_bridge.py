@@ -123,7 +123,6 @@ class SifiBridgeTimeout(SifiBridgeError):
     """
 
 
-
 class DeviceType(Enum):
     """
     NOTE: This enum is considered legacy since the custom naming functionality is supported.
@@ -357,29 +356,27 @@ class SifiBridge:
         self._check_stderr_for_bluetooth_err()
         return resp["list"]["devices"]
 
-    def connect(self, handle: DeviceType | str | None = None) -> bool:
+    def connect(self, handle: str | None = None) -> bool:
         """
         Try to connect to `handle`. A successful connect both creates a session
         and selects it as the active device.
 
         :param handle: Device handle to connect to. Can be:
 
-            - `None` to auto-discover and connect to a device
-            - a `DeviceType` to connect by device name
+            - `None` to auto-connect
+            - the device's name
             - a MAC (Windows/Linux) / UUID (MacOS) to connect to a specific device.
 
-        :return: True if connected, False if sifibridge did not find a matching
-            device before the request timed out (the typical "no device around"
-            case — safe to retry).
+        :return: True if connected, False if connection failed
         :raises ConnectionError: Bluetooth is off.
         :raises SifiBridgeError: sifibridge returned an explicit error response
             (e.g., malformed handle). These are not retry-friendly — fix the
             input rather than looping.
         """
-        if isinstance(handle, DeviceType):
-            handle = handle.value
         try:
-            resp = self._request(f"connect {handle if handle is not None else ''}")
+            resp = self._request(
+                f"connect {handle if handle is not None else ''}", 10.0
+            )
         except SifiBridgeTimeout as e:
             self._check_stderr_for_bluetooth_err()
             logger.warning(f"Could not connect to {handle}: {e.message}")
@@ -657,9 +654,7 @@ class SifiBridge:
         """
         self._request(f"download-memory --serial {port}")
         active_device = self.get_active_device()
-        return self.buffer_export(
-            fmt=fmt, output_dir=output_dir, device=active_device
-        )
+        return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
 
     def _send_device_command(self, name: str) -> bool:
         """Internal: dispatch a raw `command <name>` to the active device."""
@@ -691,15 +686,11 @@ class SifiBridge:
         """
         if index not in (1, 2):
             raise ValueError(f"LED index must be 1 or 2, got {index}")
-        return self._send_device_command(
-            f"{'open' if on else 'close'}-led{index}"
-        )
+        return self._send_device_command(f"{'open' if on else 'close'}-led{index}")
 
     def set_motor(self, on: bool) -> bool:
         """Start or stop the vibration motor on the active device."""
-        return self._send_device_command(
-            "start-motor" if on else "stop-motor"
-        )
+        return self._send_device_command("start-motor" if on else "stop-motor")
 
     def start_status_updates(self) -> bool:
         """Begin streaming device status updates as `status` packets."""
@@ -805,9 +796,7 @@ class SifiBridge:
             try:
                 resp = self._response_queue.get(timeout=timeout)
             except queue.Empty:
-                raise SifiBridgeTimeout(
-                    f"No response to {line!r} within {timeout}s"
-                )
+                raise SifiBridgeTimeout(f"No response to {line!r} within {timeout}s")
         logger.debug(f"<- {resp}")
         if "error" in resp:
             raise SifiBridgeError(
