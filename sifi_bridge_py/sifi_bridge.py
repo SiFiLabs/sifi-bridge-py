@@ -676,7 +676,7 @@ class SifiBridge:
         """
         return self._send_device_command(f"{'start' if on else 'stop'}-status-update")
 
-    def start(self, all: bool = True) -> bool:
+    def start(self, all: bool = False) -> bool:
         """
         Start an acquisition.
 
@@ -684,7 +684,7 @@ class SifiBridge:
 
         :return: True if success
         """
-        return self._request("start" + "--all" if all else "")["start"]["connected"]
+        return self._request("start" + " --all" if all else "")["start"]["connected"]
 
     def stop(self, all: bool = False) -> bool:
         """
@@ -694,7 +694,7 @@ class SifiBridge:
 
         :return: True if success
         """
-        return self._request("stop" + "--all" if all else "")["stop"]["connected"]
+        return self._request("stop" + " --all" if all else "")["stop"]["connected"]
 
     def send_event(self, all: bool = False) -> dict:
         """
@@ -705,7 +705,7 @@ class SifiBridge:
 
         :return: True if success
         """
-        return self._request("event" + "--all" if all else "")["event"]["connected"]
+        return self._request("event" + " --all" if all else "")["event"]["connected"]
 
     def buffer_export(
         self,
