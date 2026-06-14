@@ -193,8 +193,8 @@ class SifiBridge:
     Wrapper over the `sifibridge` CLI.
 
     Stdout is used as a request/reply channel for REPL commands.
-    Sensor data is streamed separately over
-    a local TCP socket via `--tcp-out`.
+    Sensor data is streamed separately over a local TCP socket: sifibridge
+    binds `--tcp-out` as a server and we connect to it as a client.
     """
 
     _bridge: sp.Popen[bytes]
@@ -219,7 +219,7 @@ class SifiBridge:
     """Default per-command timeout. sifibridge should reply within ms locally; the timeout exists only so misuse (no device, etc.) doesn't hang forever."""
 
     _DATA_SOCK_CONNECT_TIMEOUT: float = 5.0
-    """How long __init__ waits for sifibridge to dial back into the data socket."""
+    """How long __init__ waits for sifibridge to start listening on the data socket."""
 
     _closed: bool = False
     """Set by close() to make teardown idempotent."""
@@ -252,13 +252,13 @@ class SifiBridge:
 
         executable = get_executable()
 
-        # Bind a TCP listener on an ephemeral port; sifibridge will dial it
-        # for the data stream.
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(1)
-        host, port = listener.getsockname()
-        listener.settimeout(self._DATA_SOCK_CONNECT_TIMEOUT)
+        # sifibridge binds `--tcp-out` as a TCP server for the data stream and
+        # we connect to it as a client. Pick a free localhost port for it to
+        # bind: grab an ephemeral port from the OS, release it, and hand it to
+        # sifibridge. There is a small race between releasing the port and
+        # sifibridge binding it, but it is negligible on localhost.
+        host = "127.0.0.1"
+        port = self._find_free_port(host)
 
         exec_command = [
             executable,
@@ -275,16 +275,7 @@ class SifiBridge:
             exec_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE
         )
 
-        try:
-            self._data_sock, _ = listener.accept()
-        except socket.timeout:
-            self._bridge.kill()
-            raise RuntimeError(
-                f"sifibridge did not connect to the data socket within "
-                f"{self._DATA_SOCK_CONNECT_TIMEOUT}s"
-            )
-        finally:
-            listener.close()
+        self._data_sock = self._connect_data_socket(host, port)
 
         self._response_queue = queue.Queue()
         self._data_queue = queue.Queue()
@@ -299,15 +290,50 @@ class SifiBridge:
         threading.Thread(target=self._data_worker, daemon=True).start()
         threading.Thread(target=self._stderr_worker, daemon=True).start()
 
+    @staticmethod
+    def _find_free_port(host: str) -> int:
+        """Reserve and immediately release an ephemeral port, returning it."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return s.getsockname()[1]
+
+    def _connect_data_socket(self, host: str, port: int) -> socket.socket:
+        """
+        Connect to sifibridge's data server, retrying until it is accepting.
+
+        sifibridge binds `--tcp-out` asynchronously after startup, so the first
+        connection attempts may be refused. Retry until success or until
+        `_DATA_SOCK_CONNECT_TIMEOUT` elapses, bailing early if the subprocess
+        dies.
+        """
+        deadline = time.monotonic() + self._DATA_SOCK_CONNECT_TIMEOUT
+        while True:
+            if self._bridge.poll() is not None:
+                raise RuntimeError(
+                    f"sifibridge exited (code {self._bridge.returncode}) before "
+                    f"its data server at {host}:{port} became available"
+                )
+            try:
+                sock = socket.create_connection((host, port))
+                return sock
+            except (ConnectionRefusedError, OSError):
+                if time.monotonic() >= deadline:
+                    self._bridge.kill()
+                    raise RuntimeError(
+                        f"Could not connect to sifibridge data server at "
+                        f"{host}:{port} within {self._DATA_SOCK_CONNECT_TIMEOUT}s"
+                    )
+                time.sleep(0.05)
+
     def show(self) -> dict:
         """
         Get information about the active SiFi Bridge device.
 
         :raises SifiBridgeError: If no device is currently active. sifibridge
-            may stay silent on `show` when no device is selected; the request
-            will time out and raise rather than block forever.
+            replies with an explicit error in that case; the request timeout is
+            only a safety net so a wedged subprocess can't block forever.
         """
-        return self._request("show", timeout=1.0)["show"]
+        return self._request("show")["show"]
 
     def get_active_device(self) -> str:
         """
@@ -370,9 +396,7 @@ class SifiBridge:
 
         :return: True if connected, False if connection failed
         :raises ConnectionError: Bluetooth is off.
-        :raises SifiBridgeError: sifibridge returned an explicit error response
-            (e.g., malformed handle). These are not retry-friendly — fix the
-            input rather than looping.
+        :raises SifiBridgeError: sifibridge returned an error.
         """
         try:
             resp = self._request(
@@ -391,7 +415,7 @@ class SifiBridge:
         acquisitions for the device are retained until `buffer clear`.
 
         :return: Connection status response (False after a successful disconnect).
-        :raises SifiBridgeError: If there is no device to disconnect.
+        :raises SifiBridgeError: if sifibridge returns an error.
         """
         return self._request("disconnect")["disconnect"]["connected"]
 
@@ -403,9 +427,9 @@ class SifiBridge:
         imu: bool = False,
         ppg: bool = False,
     ):
-        """Configure which sensors are enabled."""
+        """Configure the enabled sensors."""
         cmd = (
-            f"configure sensors"
+            "configure sensors"
             f" --ecg {'on' if ecg else 'off'}"
             f" --emg {'on' if emg else 'off'}"
             f" --eda {'on' if eda else 'off'}"
@@ -462,7 +486,7 @@ class SifiBridge:
         """
         Configure EDA/BIOZ sensor.
 
-        **Warning**: Enabling BIOZ and ECG/EMG together may cause interference
+        **Warning**: Enabling BIOZ and ECG/EMG at the same time may cause interference
         and degrade ECG/EMG quality.
 
         :param freq: EDA/BIOZ excitation signal frequency (Hz). 0 for DC measurement.
@@ -483,11 +507,11 @@ class SifiBridge:
         sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
         avg: int = 1,
     ) -> dict:
-        """Configure PPG sensor. See sifibridge `help configure ppg`."""
+        """Configure PPG sensor."""
         if isinstance(sens, str):
             sens = PpgSensitivity(sens)
         cmd = (
-            f"configure ppg"
+            "configure ppg"
             f" --state {'on' if state else 'off'}"
             f" --fs {fs}"
             f" --iir {ir} --ired {red} --igreen {green} --iblue {blue}"
@@ -504,7 +528,7 @@ class SifiBridge:
     ) -> dict:
         """Configure IMU sensor. See sifibridge `help configure imu`."""
         cmd = (
-            f"configure imu"
+            "configure imu"
             f" --state {'on' if state else 'off'}"
             f" --fs {fs}"
             f" --acc-range {accel_range}"
@@ -605,8 +629,6 @@ class SifiBridge:
         :param output_dir: Directory to save the exported data.
         :param fmt: Output format. Either ``"csv"`` or ``"hdf5"``.
 
-        TODO: provide rule of thumb timeouts.
-
         :return: The ``buffer_export`` response payload.
         :raises SifiBridgeTimeout: If the completion packet does not arrive
             within ``timeout``.
@@ -656,8 +678,9 @@ class SifiBridge:
         """
         Open or close LED `index` on the active device.
 
-        :param index: 1 or 2.
+        :param index: LED to set, either `1` or `2`.
         :param on: True to open (turn on), False to close (turn off).
+
         :raises ValueError: If `index` is not 1 or 2.
         """
         if index not in (1, 2):
@@ -803,7 +826,12 @@ class SifiBridge:
                     if sensor is not None:
                         self._typed_queues[sensor].put(packet)
         except OSError as e:
-            logger.info(f"Data worker stopped: {e}")
+            # close() closes the socket out from under a blocked recv(), which
+            # surfaces here as EBADF; that is expected teardown, not an error.
+            if self._closed:
+                logger.debug(f"Data worker stopped during shutdown: {e}")
+            else:
+                logger.info(f"Data worker stopped: {e}")
 
     def _stderr_worker(self):
         """Buffer stderr lines for BLE-off detection."""
