@@ -218,7 +218,7 @@ class SifiBridge:
     _DEFAULT_REQUEST_TIMEOUT: float = 5.0
     """Default per-command timeout. sifibridge should reply within ms locally; the timeout exists only so misuse (no device, etc.) doesn't hang forever."""
 
-    _DATA_SOCK_CONNECT_TIMEOUT: float = 5.0
+    _DATA_SOCK_CONNECT_TIMEOUT: float = 10.0
     """How long __init__ waits for sifibridge to start listening on the data socket."""
 
     _closed: bool = False
@@ -440,7 +440,6 @@ class SifiBridge:
 
     def configure_ecg(
         self,
-        state: bool = True,
         fs: int = 500,
         dc_notch: bool = True,
         mains_notch: None | int = 50,
@@ -448,16 +447,24 @@ class SifiBridge:
         flo: int = 0,
         fhi: int = 30,
     ) -> dict:
-        """Configure ECG sensor. See sifibridge `help configure ecg` for full semantics."""
+        """Configure ECG sensor. See sifibridge `help configure ecg` for full semantics.
+
+        :param fs: Sampling rate in Hz. Possible values: 250, 500, 1000, 2000.
+        :param dc_notch: Enable the DC notch filter.
+        :param mains_notch: Mains notch filter frequency in Hz. Possible values:
+            50, 60, or None to disable.
+        :param bandpass: Enable the bandpass filter.
+        :param flo: Bandpass filter lower cutoff frequency in Hz.
+        :param fhi: Bandpass filter higher cutoff frequency in Hz.
+        """
         return self._request(
             self._build_sensor_filter_cmd(
-                "ecg", state, fs, dc_notch, mains_notch, bandpass, flo, fhi
+                "ecg", fs, dc_notch, mains_notch, bandpass, flo, fhi
             )
         )["configure"]
 
     def configure_emg(
         self,
-        state: bool = True,
         fs: int = 2000,
         dc_notch: bool = True,
         mains_notch: None | int = 50,
@@ -465,16 +472,24 @@ class SifiBridge:
         flo: int = 20,
         fhi: int = 450,
     ) -> dict:
-        """Configure EMG sensor. See sifibridge `help configure emg`."""
+        """Configure EMG sensor. See sifibridge `help configure emg`.
+
+        :param fs: Sampling rate in Hz. Possible values: 500, 1000, 1600 (SiFiBand only), 2000.
+        :param dc_notch: Enable the DC notch filter.
+        :param mains_notch: Mains notch filter frequency in Hz. Possible values:
+            50, 60, or None to disable.
+        :param bandpass: Enable the bandpass filter.
+        :param flo: Bandpass filter lower cutoff frequency in Hz.
+        :param fhi: Bandpass filter higher cutoff frequency in Hz.
+        """
         return self._request(
             self._build_sensor_filter_cmd(
-                "emg", state, fs, dc_notch, mains_notch, bandpass, flo, fhi
+                "emg", fs, dc_notch, mains_notch, bandpass, flo, fhi
             )
         )["configure"]
 
     def configure_eda(
         self,
-        state: bool = True,
         fs: int = 50,
         dc_notch: bool = True,
         mains_notch: int | None = 50,
@@ -489,17 +504,23 @@ class SifiBridge:
         **Warning**: Enabling BIOZ and ECG/EMG at the same time may cause interference
         and degrade ECG/EMG quality.
 
+        :param fs: Sampling rate in Hz. Possible values: 4, 8, 16, 32, 50.
+        :param dc_notch: Enable the DC notch filter.
+        :param mains_notch: Mains notch filter frequency in Hz. Possible values:
+            50, 60, or None to disable.
+        :param bandpass: Enable the bandpass filter.
+        :param flo: Bandpass filter lower cutoff frequency in Hz.
+        :param fhi: Bandpass filter higher cutoff frequency in Hz.
         :param freq: EDA/BIOZ excitation signal frequency (Hz). 0 for DC measurement.
         """
         cmd = self._build_sensor_filter_cmd(
-            "eda", state, fs, dc_notch, mains_notch, bandpass, flo, fhi
+            "eda", fs, dc_notch, mains_notch, bandpass, flo, fhi
         )
         return self._request(f"{cmd} --freq {freq}")["configure"]
 
     def configure_ppg(
         self,
-        state: bool = True,
-        fs: int = 100,
+        sps: int = 100,
         ir: int = 9,
         red: int = 9,
         green: int = 9,
@@ -507,33 +528,63 @@ class SifiBridge:
         sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
         avg: int = 1,
     ) -> dict:
-        """Configure PPG sensor."""
+        """Configure PPG sensor. See sifibridge `help configure ppg` for full semantics.
+
+        :param sps: Raw AFE sample rate in Hz. The effective output rate delivered
+            over the stream is ``sps / avg``, and is reported live in each packet's
+            ``sample_rate``. Possible values: 50, 100, 200, 400, 800, 1000, 1600, 3200.
+            The effective output rate must be <=400 Hz.
+        :param ir: IR LED current in mA.
+        :param red: Red LED current in mA.
+        :param green: Green LED current in mA.
+        :param blue: Blue LED current in mA.
+        :param sens: Sensor sensitivity. Possible values: low, medium, high, max.
+        :param avg: Signal averaging factor. Higher values provide smoother signals
+            but slower response to changes. Possible values: 1, 2, 4, 8, 16, 32.
+
+        The effective sampling rate is ``sps / avg``. For example, ``sps=400`` with
+        ``avg=4`` yields an effective output rate of 100 Hz. Choose ``sps`` (raw AFE
+        rate) and ``avg`` (averaging factor) together to trade off the effective rate
+        against signal smoothness.
+        """
         if isinstance(sens, str):
             sens = PpgSensitivity(sens)
         cmd = (
             "configure ppg"
-            f" --state {'on' if state else 'off'}"
-            f" --fs {fs}"
+            f" --sps {sps}"
             f" --iir {ir} --ired {red} --igreen {green} --iblue {blue}"
-            f" --sens {sens.value} --avg {avg}"
+            f" --sens {sens.value}"
+            f"--avg {avg}"
         )
         return self._request(cmd)["configure"]
 
     def configure_imu(
         self,
-        state: bool = True,
         fs: int = 100,
         accel_range: int = 2,
         gyro_range: int = 16,
     ) -> dict:
-        """Configure IMU sensor. See sifibridge `help configure imu`."""
+        """Configure IMU sensor. See sifibridge `help configure imu`.
+
+        :param fs: Sampling rate in Hz. Possible values: 25, 50, 100, 200.
+        :param accel_range: Accelerometer range in g. Possible values: 2, 4, 8, 16.
+        :param gyro_range: Gyroscope range in dps. Possible values:
+            16, 31, 63, 125, 250, 500, 1000, 2000.
+        """
         cmd = (
             "configure imu"
-            f" --state {'on' if state else 'off'}"
             f" --fs {fs}"
             f" --acc-range {accel_range}"
             f" --gyro-range {gyro_range}"
         )
+        return self._request(cmd)["configure"]
+
+    def configure_temperature(self, fs: float = 1.0) -> dict:
+        """Configure skin temperature sensor.
+
+        :param fs: Sampling rate in Hz. Possible values: 0.1, 1, 2, 10.
+        """
+        cmd = f"configure temperature --fs {fs}"
         return self._request(cmd)["configure"]
 
     def set_onboard_filtering(self, enable: bool) -> dict:
@@ -541,13 +592,6 @@ class SifiBridge:
         return self._request(f"configure filtering {'on' if enable else 'off'}")[
             "configure"
         ]
-
-    def configure_sampling_freqs(self, ecg=500, emg=2000, eda=50, imu=100, ppg=100):
-        """Configure sampling frequencies [Hz] for each biosignal."""
-        return self._request(
-            f"configure sampling-rates --ecg {ecg} --emg {emg} --eda {eda}"
-            f" --imu {imu} --ppg {ppg}"
-        )["configure"]
 
     def set_memory_mode(self, memory_config: MemoryMode | str):
         """
@@ -596,7 +640,6 @@ class SifiBridge:
     @staticmethod
     def _build_sensor_filter_cmd(
         sensor: str,
-        state: bool,
         fs: int,
         dc_notch: bool,
         mains_notch: int | None,
@@ -612,7 +655,6 @@ class SifiBridge:
             mains = "--mains-notch off"
         return (
             f"configure {sensor}"
-            f" --state {'on' if state else 'off'}"
             f" --fs {fs}"
             f" --dc-notch {'on' if dc_notch else 'off'}"
             f" {mains}"
