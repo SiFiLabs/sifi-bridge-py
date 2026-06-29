@@ -554,7 +554,7 @@ class SifiBridge:
             f" --sps {sps}"
             f" --iir {ir} --ired {red} --igreen {green} --iblue {blue}"
             f" --sens {sens.value}"
-            f"--avg {avg}"
+            f" --avg {avg}"
         )
         return self._request(cmd)["configure"]
 
