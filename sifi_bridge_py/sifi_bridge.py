@@ -813,6 +813,125 @@ class SifiBridge:
         cmd_parts.append(f"--format {fmt}")
         return self._request(" ".join(cmd_parts))["buffer_export"]
 
+    def buffer_list(self, device: str | None = None) -> list[dict]:
+        """
+        List buffered acquisitions and their status.
+
+        :param device: Device ID or name to filter by. Defaults to all devices.
+        :return: A list of acquisition info dicts, each with keys ``id``,
+            ``device``, ``start_time``, ``completed``, ``sensors`` (a list of
+            ``{"name", "num_samples"}``) and ``total_samples``.
+        """
+        cmd_parts = ["buffer list"]
+        if device is not None:
+            cmd_parts.append(f"--handle {device}")
+        return self._request(" ".join(cmd_parts))["buffer_list"]["acquisitions"]
+
+    def buffer_info(
+        self,
+        device: str | None = None,
+        acquisition_id: int | None = None,
+    ) -> dict:
+        """
+        Get detailed info about a single buffered acquisition, including the
+        device configuration it was recorded with.
+
+        :param device: Device ID or name. Defaults to the active device.
+        :param acquisition_id: Acquisition ID. Defaults to the latest acquisition.
+        :return: The ``buffer_info`` payload, with keys ``acquisition`` and
+            ``device_config``.
+        """
+        cmd_parts = ["buffer info"]
+        if device is not None:
+            cmd_parts.append(f"--handle {device}")
+        if acquisition_id is not None:
+            cmd_parts.append(f"--id {acquisition_id}")
+        return self._request(" ".join(cmd_parts))["buffer_info"]
+
+    def buffer_pull(
+        self,
+        sensor: str | list[str],
+        device: str | None = None,
+        acquisition_id: int | None = None,
+        last_seconds: float | None = None,
+        from_: float | None = None,
+        to: float | None = None,
+    ) -> list[dict]:
+        """
+        Pull buffered sensor data out of an acquisition.
+
+        :param sensor: Sensor type, or a list of them, to pull. Each one of:
+            ``ecg``, ``emg``, ``emg_armband``, ``eda``, ``imu``, ``ppg``,
+            ``temperature``, ``event``.
+        :param device: Device ID or name. Defaults to the active device.
+        :param acquisition_id: Acquisition ID. Defaults to the latest acquisition.
+        :param last_seconds: If set, only pull the last N seconds of data.
+            Mutually exclusive with ``from_``/``to``.
+        :param from_: Start of a relative time range, in seconds since recording
+            start. Requires ``to``.
+        :param to: End of a relative time range, in seconds since recording
+            start. Requires ``from_``.
+
+        :raises ValueError: If the time-range arguments are combined illegally.
+        :return: A list of per-sensor dicts, each with keys ``sensor``,
+            ``timestamps`` and ``values`` (channel name -> samples).
+        """
+        if last_seconds is not None and (from_ is not None or to is not None):
+            raise ValueError("last_seconds is mutually exclusive with from_/to")
+        if (from_ is None) != (to is None):
+            raise ValueError("from_ and to must be provided together")
+
+        sensors = [sensor] if isinstance(sensor, str) else list(sensor)
+        if not sensors:
+            raise ValueError("At least one sensor must be provided")
+
+        cmd_parts = ["buffer pull"]
+        if device is not None:
+            cmd_parts.append(f"--handle {device}")
+        for s in sensors:
+            cmd_parts.append(f"--sensor {s}")
+        if acquisition_id is not None:
+            cmd_parts.append(f"--id {acquisition_id}")
+        if last_seconds is not None:
+            cmd_parts.append(f"--last-seconds {last_seconds}")
+        if from_ is not None:
+            cmd_parts.append(f"--from {from_} --to {to}")
+        return self._request(" ".join(cmd_parts))["buffer_pull"]["sensors"]
+
+    def buffer_clear(
+        self,
+        device: str | None = None,
+        acquisition_id: int | None = None,
+        all: bool = False,
+    ) -> dict:
+        """
+        Clear buffered acquisitions.
+
+        Pass exactly one of `device`, `acquisition_id`, or `all`.
+
+        :param device: Device handle whose acquisitions should all be cleared.
+        :param acquisition_id: A single acquisition ID to clear.
+        :param all: Clear all buffered data across every device.
+
+        :raises ValueError: If more than one selector is provided.
+        :return: The ``buffer_clear`` payload, with a ``message`` key.
+        """
+        selectors = sum(
+            (device is not None, acquisition_id is not None, bool(all))
+        )
+        if selectors > 1:
+            raise ValueError(
+                "Pass at most one of device, acquisition_id, or all"
+            )
+        cmd_parts = ["buffer clear"]
+        if device is not None:
+            cmd_parts.append(f"--handle {device}")
+        if acquisition_id is not None:
+            cmd_parts.append(f"--id {acquisition_id}")
+        if all:
+            cmd_parts.append("--all")
+        return self._request(" ".join(cmd_parts))["buffer_clear"]
+
     # ------------------------------------------------------------------
     # Core IO: one generic request/response, two workers, one data queue
     # ------------------------------------------------------------------
