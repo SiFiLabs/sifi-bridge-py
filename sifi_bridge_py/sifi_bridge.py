@@ -33,10 +33,12 @@ class PacketType(Enum):
     EDA = "eda"
     IMU = "imu"
     PPG = "ppg"
-    STATUS = "status"
-    MEMORY = "memory"
     TEMPERATURE = "temperature"
+    MEMORY = "memory"
+    STATUS = "status"
     START_TIME = "start_time"
+    EVENT = "event"
+    INVALID = "invalid"
 
 
 class PacketStatus(Enum):
@@ -56,10 +58,10 @@ class PacketStatus(Enum):
     """
 
     OK = "ok"
-    LOST_DATA = "lost_data"
     RECORDING = "recording"
     MEMORY_DOWNLOAD_COMPLETED = "memory_download_completed"
     MEMORY_ERASED = "memory_erased"
+    INVALID_DATETIME = "invalid_datetime"
     INVALID = "invalid"
 
 
@@ -97,6 +99,8 @@ class SensorChannel(Enum):
     """PPG sensor channels."""
     TEMPERATURE = "temperature"
     """Temperature sensor channel."""
+    EVENT = "event"
+    """Event data key"""
 
 
 class SifiBridgeError(RuntimeError):
@@ -125,7 +129,7 @@ class SifiBridgeTimeout(SifiBridgeError):
 
 class DeviceType(Enum):
     """
-    NOTE: This enum is considered legacy since the custom naming functionality is supported.
+    DEPRECATED: This enum is considered legacy since the custom naming functionality is supported.
 
     Use in tandem with SifiBridge.connect() to connect to SiFi Devices via BLE name.
     """
@@ -325,7 +329,7 @@ class SifiBridge:
                     )
                 time.sleep(0.05)
 
-    def show(self) -> dict:
+    def info(self) -> dict:
         """
         Get information about the active SiFi Bridge device.
 
@@ -333,14 +337,14 @@ class SifiBridge:
             replies with an explicit error in that case; the request timeout is
             only a safety net so a wedged subprocess can't block forever.
         """
-        return self._request("show")["show"]
+        return self._request("info")["info"]
 
     def get_active_device(self) -> str:
         """
         :returns: Active device ID.
         :raises SifiBridgeError: If no device is currently active.
         """
-        return self.show()["id"]
+        return self.info()["id"]
 
     def select_device(self, name: str) -> str:
         """
@@ -532,12 +536,12 @@ class SifiBridge:
 
         :param sps: Raw AFE sample rate in Hz. The effective output rate delivered
             over the stream is ``sps / avg``, and is reported live in each packet's
-            ``sample_rate``. Possible values: 50, 100, 200, 400, 800, 1000, 1600, 3200.
+            ``sample_rate``. Possible values: 50, 100, 200, 400, 800.
             The effective output rate must be <=400 Hz.
-        :param ir: IR LED current in mA.
-        :param red: Red LED current in mA.
-        :param green: Green LED current in mA.
-        :param blue: Blue LED current in mA.
+        :param ir: IR LED current in mA (0-50).
+        :param red: Red LED current in mA (0-50).
+        :param green: Green LED current in mA (0-50).
+        :param blue: Blue LED current in mA (0-50).
         :param sens: Sensor sensitivity. Possible values: low, medium, high, max.
         :param avg: Signal averaging factor. Higher values provide smoother signals
             but slower response to changes. Possible values: 1, 2, 4, 8, 16, 32.
@@ -552,7 +556,7 @@ class SifiBridge:
         cmd = (
             "configure ppg"
             f" --sps {sps}"
-            f" --iir {ir} --ired {red} --igreen {green} --iblue {blue}"
+            f" --led-ir {ir} --led-red {red} --led-green {green} --led-blue {blue}"
             f" --sens {sens.value}"
             f" --avg {avg}"
         )
@@ -593,6 +597,17 @@ class SifiBridge:
             "configure"
         ]
 
+    def set_high_gain(self, enable: bool) -> dict:
+        """
+        Enable or disable high gain on the ECG and EMG ADC.
+
+        High gain uses more of the dynamic range but saturates the sensor more
+        easily. Disabling reverts to normal gain.
+        """
+        return self._request(f"configure high-gain {'on' if enable else 'off'}")[
+            "configure"
+        ]
+
     def set_memory_mode(self, memory_config: MemoryMode | str):
         """
         Configure the device's memory mode.
@@ -609,7 +624,7 @@ class SifiBridge:
 
         **NOTE**: Only supported on select BioPoint versions. Ask SiFi Labs directly.
         """
-        return self._request(f"configure low-latency-mode {'on' if on else 'off'}")[
+        return self._request(f"configure low-latency {'on' if on else 'off'}")[
             "configure"
         ]
 
@@ -621,7 +636,7 @@ class SifiBridge:
 
     def set_night_mode(self, enable: bool):
         """Enable/disable night mode (LEDs off during acquisition)."""
-        return self._request(f"configure night-mode {'on' if enable else 'off'}")[
+        return self._request(f"configure night {'on' if enable else 'off'}")[
             "configure"
         ]
 
@@ -635,7 +650,7 @@ class SifiBridge:
             raise ValueError(
                 f"Motor intensity level must be between 1 and 10, got {level}"
             )
-        return self._request(f"configure motor-intensity {level}")["configure"]
+        return self._request(f"motor --intensity {level}")["motor"]
 
     @staticmethod
     def _build_sensor_filter_cmd(
@@ -659,8 +674,8 @@ class SifiBridge:
             f" --dc-notch {'on' if dc_notch else 'off'}"
             f" {mains}"
             f" --bandpass {'on' if bandpass else 'off'}"
-            f" --flo {flo}"
-            f" --fhi {fhi}"
+            f" --bandpass-low {flo}"
+            f" --bandpass-high {fhi}"
         )
 
     def download_memory_ble(self, output_dir: str, fmt: str = "csv") -> dict:
@@ -696,27 +711,23 @@ class SifiBridge:
         active_device = self.get_active_device()
         return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
 
-    def _send_device_command(self, name: str) -> bool:
-        """Internal: dispatch a raw `command <name>` to the active device."""
-        return self._request(f"command {name}")["command"]["connected"]
-
-    def erase_onboard_memory(self) -> bool:
+    def erase_onboard_memory(self) -> dict:
         """
         Erase the active device's onboard flash.
 
-        :return: True if success, else False
+        :return: The `erase_memory` response from sifibridge.
         :raises SifiBridgeError: If sifibridge returns an error response.
         """
-        return self._send_device_command("erase-memory")
+        return self._request("erase-memory")
 
-    def power_off(self) -> bool:
+    def power_off(self) -> dict:
         """Power off the active device.
 
-        :return: True if the device is still connected after the command.
+        :return: The response from sifibridge
         """
-        return self._send_device_command("power-off")
+        return self._request("power-off")
 
-    def set_led(self, index: int, on: bool) -> bool:
+    def set_led(self, index: int, on: bool) -> dict:
         """
         Open or close LED `index` on the active device.
 
@@ -724,22 +735,32 @@ class SifiBridge:
         :param on: True to open (turn on), False to close (turn off).
 
         :raises ValueError: If `index` is not 1 or 2.
+        :return: The `led` response payload.
         """
         if index not in (1, 2):
             raise ValueError(f"LED index must be 1 or 2, got {index}")
-        return self._send_device_command(f"{'open' if on else 'close'}-led{index}")
+        s = "on" if on else "off"
+        return self._request(f"led --state {s} {index}")["led"]
 
-    def set_motor(self, on: bool) -> bool:
-        """Start or stop the vibration motor on the active device."""
-        return self._send_device_command("start-motor" if on else "stop-motor")
+    def set_motor(self, on: bool) -> dict:
+        """
+        Start or stop the vibration motor on the active device.
 
-    def set_status_updates(self, on: bool) -> bool:
+        :return: Response from sifibridge
+        """
+        s = "on" if on else "off"
+        return self._request(f"motor --state {s}")
+
+    def set_status_updates(self, on: bool) -> dict:
         """
         Enable or stop status updates.
 
         Status updates are periodic (~1s) data packets containing information such as memory used, memory size, etc.
+
+        :return: The `status_update` response payload.
         """
-        return self._send_device_command(f"{'start' if on else 'stop'}-status-update")
+        s = "on" if on else "off"
+        return self._request(f"status-update {s}")["status_update"]
 
     def start(self, all: bool = False) -> bool:
         """
@@ -787,9 +808,9 @@ class SifiBridge:
         """
         cmd_parts = ["buffer export"]
         if device is not None:
-            cmd_parts.append(f"--device {device}")
+            cmd_parts.append(f"--handle {device}")
         cmd_parts.append(f"--dir {output_dir}")
-        cmd_parts.append(fmt)
+        cmd_parts.append(f"--format {fmt}")
         return self._request(" ".join(cmd_parts))["buffer_export"]
 
     # ------------------------------------------------------------------
