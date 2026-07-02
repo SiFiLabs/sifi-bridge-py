@@ -158,6 +158,15 @@ class TestConfigureCommands(unittest.TestCase):
         sb.configure_temperature(fs=2)
         self.assertEqual(tok(req.last), tok("configure temperature --fs 2"))
 
+    def test_configure_temperature_float_fs_has_no_trailing_zero(self):
+        # The binary only accepts "0.1", "1", "2", "10" — a float default of
+        # 1.0 must render as "1", not "1.0", or clap rejects it.
+        sb, req = make_sb()
+        sb.configure_temperature()  # default fs=1.0
+        self.assertEqual(tok(req.last), tok("configure temperature --fs 1"))
+        sb.configure_temperature(fs=0.1)
+        self.assertEqual(tok(req.last), tok("configure temperature --fs 0.1"))
+
     def test_toggle_configs(self):
         sb, req = make_sb()
         sb.set_onboard_filtering(True)

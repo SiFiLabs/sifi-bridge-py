@@ -588,7 +588,10 @@ class SifiBridge:
 
         :param fs: Sampling rate in Hz. Possible values: 0.1, 1, 2, 10.
         """
-        cmd = f"configure temperature --fs {fs}"
+        # The binary's allowed values are "0.1", "1", "2", "10"; a Python float
+        # renders 1.0 as "1.0", which clap rejects (and it replies only on
+        # stderr, so the request would hang). ``:g`` drops the trailing ".0".
+        cmd = f"configure temperature --fs {fs:g}"
         return self._request(cmd)["configure"]
 
     def set_onboard_filtering(self, enable: bool) -> dict:

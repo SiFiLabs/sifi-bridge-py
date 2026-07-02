@@ -1,10 +1,10 @@
 [project]
 name = "sifi-bridge-py"
 # https://packaging.python.org/en/latest/specifications/version-specifiers/#pre-release-separators
-version = "2.0.0-b17"
+version = "2.0.0-b18"
 description = "Python bindings for the SiFi Bridge tool."
 authors = [{ name = "SiFi Labs", email = "gabrielg@sifilabs.com" }]
-dependencies = ["numpy", "sifibridge-bin>=2.0.0b19"]
+dependencies = ["numpy", "sifibridge-bin>=2.0.0b20"]
 requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "MIT" }

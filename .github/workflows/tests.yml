@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Only the Tier 1 unit tests run in CI. They mock the single `_request`
+# chokepoint, so they need neither a sifibridge binary nor hardware.
+#
+# Tier 2 (tests/test_integration.py) needs a sifibridge binary whose REPL API
+# matches this wrapper. The pinned `sifibridge-bin` release does not yet include
+# the reworked 2.0.0 REPL commands (e.g. `buffer list`), so it can't be run here
+# yet. Once `sifibridge-bin` is bumped to a release that matches, add a step
+# that downloads the matching binary, exports `SIFIBRIDGE_EXE`, and runs
+# `python -m unittest tests.test_integration`.
+#
+# Tier 3 (tests/test_hardware.py) needs a live device and never runs in CI.
+
+jobs:
+  unit:
+    name: Tier 1 unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Unit tests (Tier 1)
+        run: uv run python -m unittest tests.test_unit -v
