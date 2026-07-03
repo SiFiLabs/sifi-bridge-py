@@ -56,12 +56,9 @@ def _open_connected(attempts: int = 20) -> sbp.SifiBridge | None:
     connected `SifiBridge`, or `None` (after cleaning up) if it never connects.
     """
     sb = sbp.SifiBridge()
-    try:
-        for _ in range(attempts):
-            if sb.connect(_HANDLE):
-                return sb
-    except ConnectionError:
-        pass
+    for _ in range(attempts):
+        if sb.connect(_HANDLE):
+            return sb
     sb.close()
     return None
 

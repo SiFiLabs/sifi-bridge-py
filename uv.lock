@@ -1422,7 +1422,7 @@ wheels = [
 
 [[package]]
 name = "sifi-bridge-py"
-version = "2.0.0b17"
+version = "2.0.0b18"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1455,7 +1455,7 @@ provides-extras = ["examples"]
 
 [[package]]
 name = "sifibridge-bin"
-version = "2.0.0b19"
+version = "2.0.0b21"
 source = { directory = "sifibridge-bin" }
 
 [[package]]

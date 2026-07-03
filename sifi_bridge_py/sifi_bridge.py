@@ -213,9 +213,6 @@ class SifiBridge:
     _typed_queues: dict[str, queue.Queue]
     """Per-sensor queues — back `get_ecg()`, `get_emg()`, etc."""
 
-    _stderr_queue: queue.Queue
-    """Stderr lines."""
-
     _response_lock: threading.Lock
     """Serializes (write to stdin) → (read from response queue) pairs."""
 
@@ -271,13 +268,15 @@ class SifiBridge:
             f"{host}:{port}",
         ]
 
+        verbosity = self._verbosity_flag(logger.getEffectiveLevel())
+        if verbosity:
+            exec_command.append(verbosity)
+
         if use_lsl:
             exec_command.append("--lsl")
 
         logger.info(f"Launching executable: {' '.join(exec_command)}")
-        self._bridge = sp.Popen(
-            exec_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE
-        )
+        self._bridge = sp.Popen(exec_command, stdin=sp.PIPE, stdout=sp.PIPE)
 
         self._data_sock = self._connect_data_socket(host, port)
 
@@ -287,12 +286,27 @@ class SifiBridge:
             sensor: queue.Queue()
             for sensor in set(self._PACKET_TYPE_TO_SENSOR.values())
         }
-        self._stderr_queue = queue.Queue()
         self._response_lock = threading.Lock()
 
         threading.Thread(target=self._response_worker, daemon=True).start()
         threading.Thread(target=self._data_worker, daemon=True).start()
-        threading.Thread(target=self._stderr_worker, daemon=True).start()
+
+    @staticmethod
+    def _verbosity_flag(level: int) -> str:
+        """Translate a Python logging level into a sifibridge verbosity flag.
+
+        sifibridge (via clap-verbosity-flag) logs at Error with no flag and
+        raises one level per `-v`: `-v`=Warn, `-vv`=Info, `-vvv`=Debug. We
+        match the wrapper's own logger so sifibridge is as chatty as we are.
+        Returns an empty string for Error/Critical, i.e. sifibridge's default.
+        """
+        if level <= logging.DEBUG:
+            return "-vvv"
+        if level <= logging.INFO:
+            return "-vv"
+        if level <= logging.WARNING:
+            return "-v"
+        return ""
 
     @staticmethod
     def _find_free_port(host: str) -> int:
@@ -377,13 +391,10 @@ class SifiBridge:
     def list_devices(self, source: ListSources | str) -> list[str]:
         """
         List all devices found from a given `source`.
-
-        :raises ConnectionError: If Bluetooth is off.
         """
         if isinstance(source, str):
             source = ListSources(source)
         resp = self._request(f"list {source.value}")
-        self._check_stderr_for_bluetooth_err()
         return resp["list"]["devices"]
 
     def connect(self, handle: str | None = None, timeout: float = 10.0) -> bool:
@@ -399,7 +410,6 @@ class SifiBridge:
         :param timeout: Connection timeout
 
         :return: True if connected, False if connection failed
-        :raises ConnectionError: Bluetooth is off.
         :raises SifiBridgeError: sifibridge returned an error.
         """
         try:
@@ -407,10 +417,8 @@ class SifiBridge:
                 f"connect {handle if handle is not None else ''}", timeout
             )
         except SifiBridgeTimeout as e:
-            self._check_stderr_for_bluetooth_err()
             logger.warning(f"Could not connect to {handle}: {e.message}")
             return False
-        self._check_stderr_for_bluetooth_err()
         return resp["connect"]["connected"]
 
     def disconnect(self) -> bool:
@@ -919,13 +927,9 @@ class SifiBridge:
         :raises ValueError: If more than one selector is provided.
         :return: The ``buffer_clear`` payload, with a ``message`` key.
         """
-        selectors = sum(
-            (device is not None, acquisition_id is not None, bool(all))
-        )
+        selectors = sum((device is not None, acquisition_id is not None, bool(all)))
         if selectors > 1:
-            raise ValueError(
-                "Pass at most one of device, acquisition_id, or all"
-            )
+            raise ValueError("Pass at most one of device, acquisition_id, or all")
         cmd_parts = ["buffer clear"]
         if device is not None:
             cmd_parts.append(f"--handle {device}")
@@ -1018,15 +1022,6 @@ class SifiBridge:
             else:
                 logger.info(f"Data worker stopped: {e}")
 
-    def _stderr_worker(self):
-        """Buffer stderr lines for BLE-off detection."""
-        assert self._bridge.stderr is not None
-        try:
-            for raw in iter(self._bridge.stderr.readline, b""):
-                self._stderr_queue.put(raw.decode())
-        except Exception as e:
-            logger.error(f"Stderr worker stopped: {e}")
-
     def clear_data_buffer(self) -> int:
         """
         Drain all internal sensor-data queues (generic + per-sensor).
@@ -1106,25 +1101,6 @@ class SifiBridge:
         """Pop the next event packet. Returns `{}` if `timeout` elapses."""
         return self._get_sensor_packet("event", timeout)
 
-    def _check_stderr_for_bluetooth_err(self):
-        """Drain stderr and raise `ConnectionError` if a line looks BLE-related."""
-        ble_off = False
-        while True:
-            try:
-                error_line = self._stderr_queue.get_nowait()
-            except queue.Empty:
-                break
-            logger.error(error_line)
-            lowered = error_line.lower()
-            if (
-                "bluetooth" in lowered
-                or "ble adapter" in lowered
-                or "ble is" in lowered
-            ):
-                ble_off = True
-        if ble_off:
-            raise ConnectionError("Bluetooth is off.")
-
     def close(self) -> None:
         """
         Shut down the sifibridge subprocess and release the data socket.
@@ -1166,12 +1142,11 @@ class SifiBridge:
                     bridge.wait(timeout=1)
                 except sp.TimeoutExpired:
                     pass
-            for pipe in (bridge.stdout, bridge.stderr):
-                if pipe is not None and not pipe.closed:
-                    try:
-                        pipe.close()
-                    except OSError:
-                        pass
+            if bridge.stdout is not None and not bridge.stdout.closed:
+                try:
+                    bridge.stdout.close()
+                except OSError:
+                    pass
 
     def __enter__(self) -> "SifiBridge":
         return self

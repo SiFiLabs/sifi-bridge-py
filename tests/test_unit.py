@@ -12,7 +12,6 @@ Command lines are compared token-wise (``str.split()``) so incidental
 whitespace is ignored while flags and values still must match exactly.
 """
 
-import queue
 import unittest
 
 from sifi_bridge_py.sifi_bridge import (
@@ -68,10 +67,8 @@ class FakeRequest:
 
 def make_sb(response=None) -> tuple[SifiBridge, "FakeRequest"]:
     """A SifiBridge with no subprocess: __init__ is skipped and ``_request`` is
-    replaced by a recorder. ``_stderr_queue`` is provided because a couple of
-    methods drain it for Bluetooth-off detection."""
+    replaced by a recorder."""
     sb = SifiBridge.__new__(SifiBridge)
-    sb._stderr_queue = queue.Queue()
     rec = FakeRequest(response)
     sb._request = rec
     return sb, rec

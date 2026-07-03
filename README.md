@@ -87,7 +87,6 @@ with SifiBridge() as sb:
 from sifi_bridge_py import SifiBridgeError, SifiBridgeTimeout
 ```
 
-- `ConnectionError` — Bluetooth adapter is off or unavailable. Raised by `connect()` and `list_devices()`.
 - `SifiBridgeTimeout` (subclass of `SifiBridgeError`) — the CLI didn't reply within the timeout. Retry-friendly. `connect()` already catches this internally and returns `False`.
 - `SifiBridgeError` — the CLI returned an explicit `{"error": ...}` response. Indicates malformed input or an unsupported operation; fix the call rather than retrying.
 
