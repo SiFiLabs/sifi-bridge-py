@@ -83,114 +83,154 @@ def tok(line: str):
     return line.split()
 
 
-class TestOptionalConfiguration(unittest.TestCase):
-    """sifibridge 2.0.0 leaves a setting untouched when its flag is absent.
+ECG_DEFAULTS = (
+    "configure ecg --fs 500 --dc-notch on --mains-notch 50 "
+    "--bandpass on --bandpass-low 0 --bandpass-high 30"
+)
+EMG_DEFAULTS = (
+    "configure emg --fs 2000 --dc-notch on --mains-notch 50 "
+    "--bandpass on --bandpass-low 20 --bandpass-high 450"
+)
+EDA_DEFAULTS = (
+    "configure eda --fs 50 --dc-notch on --mains-notch 50 "
+    "--bandpass on --bandpass-low 0 --bandpass-high 5 --freq 0"
+)
+PPG_DEFAULTS = (
+    "configure ppg --sps 100 --led-ir 9 --led-red 9 --led-green 9 "
+    "--led-blue 9 --sens medium --avg 1"
+)
+IMU_DEFAULTS = "configure imu --fs 100 --acc-range 16"
 
-    The wrapper must therefore emit *only* the parameters the caller passed: a
-    default-valued flag would silently overwrite a setting the caller never
-    mentioned. These tests pin that down flag by flag — they are the unit-level
-    half of the guarantee, with the round-trip half in ``test_hardware.py``.
+
+class TestDeclarativeConfiguration(unittest.TestCase):
+    """A `configure_*` call states the sensor's whole configuration.
+
+    Every flag is always sent, so a parameter the caller leaves out is reset to
+    the wrapper's default rather than kept at whatever the device has. One call
+    therefore fully determines the sensor. sifibridge 2.0.0 would support the
+    other reading — an absent flag leaves its setting alone — which is exactly
+    why these tests assert the *complete* command line rather than a substring:
+    a flag silently going missing would change the meaning of every call.
     """
 
-    def test_configure_sensors_emits_only_given_sensors(self):
+    def test_configure_sensors_disables_the_unnamed(self):
         sb, req = make_sb()
-        sb.configure_sensors(ppg=True)
-        self.assertEqual(tok(req.last), tok("configure sensors --ppg on"))
+        sb.configure_sensors(emg=True)
+        self.assertEqual(
+            tok(req.last),
+            tok("configure sensors --ecg off --emg on --eda off --imu off --ppg off"),
+        )
 
-    def test_configure_sensors_off_is_not_omission(self):
-        sb, req = make_sb()
-        sb.configure_sensors(ecg=False, imu=True)
-        self.assertEqual(tok(req.last), tok("configure sensors --ecg off --imu on"))
-
-    def test_configure_sensors_no_args_emits_no_flags(self):
+    def test_configure_sensors_no_args_disables_everything(self):
         sb, req = make_sb()
         sb.configure_sensors()
-        self.assertEqual(tok(req.last), tok("configure sensors"))
+        self.assertEqual(
+            tok(req.last),
+            tok("configure sensors --ecg off --emg off --eda off --imu off --ppg off"),
+        )
 
-    def test_configure_ecg_fs_only(self):
-        # The headline case: changing fs must not resend the filter settings.
+    def test_configure_sensors_multiple(self):
+        sb, req = make_sb()
+        sb.configure_sensors(ecg=True, imu=True)
+        self.assertEqual(
+            tok(req.last),
+            tok("configure sensors --ecg on --emg off --eda off --imu on --ppg off"),
+        )
+
+    def test_configure_defaults(self):
+        sb, req = make_sb()
+        for method, expected in (
+            (sb.configure_ecg, ECG_DEFAULTS),
+            (sb.configure_emg, EMG_DEFAULTS),
+            (sb.configure_eda, EDA_DEFAULTS),
+            (sb.configure_ppg, PPG_DEFAULTS),
+            (sb.configure_imu, IMU_DEFAULTS),
+        ):
+            with self.subTest(method=method.__name__):
+                method()
+                self.assertEqual(tok(req.last), tok(expected))
+
+    def test_configure_ecg_fs_only_resets_the_rest(self):
+        # The defining case: naming fs alone returns every other ECG setting to
+        # its default, and the command line says so explicitly.
         sb, req = make_sb()
         sb.configure_ecg(fs=1000)
-        self.assertEqual(tok(req.last), tok("configure ecg --fs 1000"))
-
-    def test_configure_emg_fs_only(self):
-        sb, req = make_sb()
-        sb.configure_emg(fs=1000)
-        self.assertEqual(tok(req.last), tok("configure emg --fs 1000"))
-
-    def test_configure_ecg_full(self):
-        sb, req = make_sb()
-        sb.configure_ecg(
-            fs=500, dc_notch=True, mains_notch=50, bandpass=True, flo=0, fhi=30
-        )
         self.assertEqual(
             tok(req.last),
             tok(
-                "configure ecg --fs 500 --dc-notch on --mains-notch 50 "
+                "configure ecg --fs 1000 --dc-notch on --mains-notch 50 "
                 "--bandpass on --bandpass-low 0 --bandpass-high 30"
             ),
         )
 
-    def test_configure_ecg_false_flags_are_emitted_as_off(self):
+    def test_configure_emg_partial(self):
+        sb, req = make_sb()
+        sb.configure_emg(fs=1000, flo=30)
+        self.assertEqual(
+            tok(req.last),
+            tok(
+                "configure emg --fs 1000 --dc-notch on --mains-notch 50 "
+                "--bandpass on --bandpass-low 30 --bandpass-high 450"
+            ),
+        )
+
+    def test_configure_false_flags_are_emitted_as_off(self):
         sb, req = make_sb()
         sb.configure_ecg(dc_notch=False, bandpass=False)
         self.assertEqual(
-            tok(req.last), tok("configure ecg --dc-notch off --bandpass off")
+            tok(req.last),
+            tok(
+                "configure ecg --fs 500 --dc-notch off --mains-notch 50 "
+                "--bandpass off --bandpass-low 0 --bandpass-high 30"
+            ),
         )
 
     def test_configure_ecg_zero_cutoff_is_emitted(self):
-        # flo=0 is a real value, not an omission.
         sb, req = make_sb()
         sb.configure_ecg(flo=0)
-        self.assertEqual(tok(req.last), tok("configure ecg --bandpass-low 0"))
+        self.assertIn("--bandpass-low 0", req.last)
 
-    def test_mains_notch_tristate(self):
+    def test_mains_notch_values(self):
         sb, req = make_sb()
         sb.configure_ecg(mains_notch=50)
         self.assertIn("--mains-notch 50", req.last)
         sb.configure_ecg(mains_notch=60)
         self.assertIn("--mains-notch 60", req.last)
-        for disable in ("off", 0, False):
-            sb.configure_ecg(mains_notch=disable)
-            self.assertIn("--mains-notch off", req.last)
-        sb.configure_ecg(mains_notch=None)
-        self.assertNotIn("--mains-notch", req.last)
+        # Every way of saying "disable it", None included — there is no longer
+        # a "leave it alone" state to confuse None with.
+        for disable in (None, "off", 0, False):
+            with self.subTest(value=disable):
+                sb.configure_ecg(mains_notch=disable)
+                self.assertIn("--mains-notch off", req.last)
 
     def test_mains_notch_rejects_other_values(self):
         sb, req = make_sb()
         with self.assertRaises(ValueError):
             sb.configure_ecg(mains_notch=100)
 
-    def test_configure_eda_freq_optional(self):
+    def test_configure_eda_freq(self):
         sb, req = make_sb()
         sb.configure_eda(freq=15)
-        self.assertEqual(tok(req.last), tok("configure eda --freq 15"))
-        sb.configure_eda(fs=50)
-        self.assertEqual(tok(req.last), tok("configure eda --fs 50"))
+        self.assertIn("--freq 15", req.last)
+        self.assertIn("--fs 50", req.last)  # the rest still defaulted and sent
 
-    def test_configure_temperature_optional_and_float_format(self):
+    def test_configure_temperature_float_format(self):
         # The binary accepts "0.1", "1", "2", "10"; a float 1.0 must render as
         # "1", not "1.0", or clap rejects it.
         sb, req = make_sb()
-        sb.configure_temperature(fs=1.0)
+        sb.configure_temperature()
         self.assertEqual(tok(req.last), tok("configure temperature --fs 1"))
         sb.configure_temperature(fs=0.1)
         self.assertEqual(tok(req.last), tok("configure temperature --fs 0.1"))
-        sb.configure_temperature()
-        self.assertEqual(tok(req.last), tok("configure temperature"))
+        sb.configure_temperature(fs=10)
+        self.assertEqual(tok(req.last), tok("configure temperature --fs 10"))
 
 
 class TestPpgConfiguration(unittest.TestCase):
     def test_configure_ppg_uses_led_flags(self):
         sb, req = make_sb()
-        sb.configure_ppg(ir=9, red=9, green=9, blue=9, sens="medium")
-        self.assertEqual(
-            tok(req.last),
-            tok(
-                "configure ppg --led-ir 9 --led-red 9 --led-green 9 "
-                "--led-blue 9 --sens medium"
-            ),
-        )
+        sb.configure_ppg(ir=1, red=2, green=3, blue=4)
+        self.assertIn("--led-ir 1 --led-red 2 --led-green 3 --led-blue 4", req.last)
 
     def test_configure_ppg_sens_accepts_str_and_enum(self):
         sb, req = make_sb()
@@ -199,10 +239,17 @@ class TestPpgConfiguration(unittest.TestCase):
         sb.configure_ppg(sens=PpgSensitivity.MAX)
         self.assertIn("--sens max", req.last)
 
-    def test_configure_ppg_rate_within_cap(self):
+    def test_configure_ppg_defaults_are_within_the_cap(self):
         sb, req = make_sb()
-        sb.configure_ppg(sps=400, avg=2)  # 200 Hz effective, at the cap
-        self.assertEqual(tok(req.last), tok("configure ppg --sps 400 --avg 2"))
+        sb.configure_ppg()  # 100 / 1 = 100 Hz
+        self.assertIn("--sps 100", req.last)
+        self.assertIn("--avg 1", req.last)
+
+    def test_configure_ppg_rate_at_the_cap(self):
+        sb, req = make_sb()
+        sb.configure_ppg(sps=400, avg=2)  # 200 Hz effective, exactly at the cap
+        self.assertIn("--sps 400", req.last)
+        self.assertIn("--avg 2", req.last)
 
     def test_configure_ppg_rate_above_cap_rejected(self):
         sb, req = make_sb()
@@ -210,19 +257,16 @@ class TestPpgConfiguration(unittest.TestCase):
             sb.configure_ppg(sps=800, avg=2)  # 400 Hz effective
         self.assertIn("200", str(ctx.exception))
 
-    def test_configure_ppg_requires_sps_and_avg_together(self):
-        # Neither alone determines the effective rate, so the cap cannot be
-        # enforced from one of them.
+    def test_configure_ppg_sps_alone_can_exceed_the_cap(self):
+        # avg defaults to 1, so a high sps on its own is over the cap.
         sb, req = make_sb()
         with self.assertRaises(ValueError):
             sb.configure_ppg(sps=400)
-        with self.assertRaises(ValueError):
-            sb.configure_ppg(avg=2)
 
     def test_configure_ppg_rejects_non_positive_avg(self):
         sb, req = make_sb()
         with self.assertRaises(ValueError):
-            sb.configure_ppg(sps=100, avg=0)
+            sb.configure_ppg(avg=0)
 
 
 class TestImuConfiguration(unittest.TestCase):
@@ -236,13 +280,14 @@ class TestImuConfiguration(unittest.TestCase):
     def test_configure_imu_accel_range_validated(self):
         sb, req = make_sb()
         for bad in (2, 4, 32):
-            with self.assertRaises(ValueError):
-                sb.configure_imu(accel_range=bad)
+            with self.subTest(accel_range=bad):
+                with self.assertRaises(ValueError):
+                    sb.configure_imu(accel_range=bad)
 
-    def test_configure_imu_fs_only(self):
+    def test_configure_imu_fs_only_defaults_the_range(self):
         sb, req = make_sb()
-        sb.configure_imu(fs=100)
-        self.assertEqual(tok(req.last), tok("configure imu --fs 100"))
+        sb.configure_imu(fs=50)
+        self.assertEqual(tok(req.last), tok("configure imu --fs 50 --acc-range 16"))
 
 
 class TestDeviceTargeting(unittest.TestCase):
@@ -253,19 +298,19 @@ class TestDeviceTargeting(unittest.TestCase):
         # targeting flags belong before the subcommand.
         sb, req = make_sb()
         sb.configure_ecg(fs=1000, all=True)
-        self.assertEqual(tok(req.last), tok("configure --all ecg --fs 1000"))
+        self.assertEqual(tok(req.last)[:3], tok("configure --all ecg"))
 
     def test_configure_devices_list(self):
         sb, req = make_sb()
         sb.configure_emg(fs=1000, devices=["dev1", "dev2"])
         self.assertEqual(
-            tok(req.last), tok("configure --devices dev1,dev2 emg --fs 1000")
+            tok(req.last)[:4], tok("configure --devices dev1,dev2 emg")
         )
 
     def test_configure_devices_single_string(self):
         sb, req = make_sb()
         sb.configure_emg(fs=1000, devices="dev1")
-        self.assertEqual(tok(req.last), tok("configure --devices dev1 emg --fs 1000"))
+        self.assertEqual(tok(req.last)[:4], tok("configure --devices dev1 emg"))
 
     def test_all_and_devices_are_mutually_exclusive(self):
         sb, req = make_sb()
@@ -300,7 +345,7 @@ class TestDeviceTargeting(unittest.TestCase):
         self.assertEqual(sb.send_event(all=True), per_device)
         self.assertEqual(sb.set_led(1, True, all=True), per_device)
         self.assertEqual(sb.erase_onboard_memory(all=True), per_device)
-        self.assertEqual(sb.configure_ecg(fs=500, all=True), per_device)
+        self.assertEqual(sb.configure_ecg(all=True), per_device)
 
     def test_single_device_response_is_unwrapped(self):
         sb, req = make_sb({"start": {"connected": True}})
@@ -552,7 +597,7 @@ class TestSessionCommands(unittest.TestCase):
 
         sb, req = make_sb(resp)
         with self.assertRaises(SifiBridgeError):
-            sb.configure_ecg(fs=500)
+            sb.configure_ecg()
 
 
 class TestResponseRouting(unittest.TestCase):

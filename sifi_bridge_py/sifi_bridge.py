@@ -571,12 +571,13 @@ class SifiBridge:
     def _flag(name: str, value) -> str:
         """Render ``--name value``, or the empty string when `value` is None.
 
-        This is what makes every configuration parameter optional: sifibridge
-        2.0.0 leaves a setting untouched when its flag is absent, so a None
-        parameter must produce no flag at all rather than a default value.
-
         Booleans render as sifibridge's ``on``/``off``, and floats use ``:g``
         so ``1.0`` becomes ``1`` (clap rejects ``1.0`` where it expects ``1``).
+
+        A None value emits nothing, which is how sifibridge 2.0.0 says "leave
+        this setting alone". The `configure_*` methods do not rely on that —
+        they state a sensor's whole configuration — but the flag builders for
+        commands that take genuinely optional arguments do.
         """
         if value is None:
             return ""
@@ -620,20 +621,20 @@ class SifiBridge:
 
     @staticmethod
     def _mains_notch_flag(value) -> str:
-        """Render ``--mains-notch``, which is tri-state in sifibridge 2.0.0.
+        """Render ``--mains-notch``.
 
-        None leaves the setting as-is (no flag), ``"off"``/``0``/``False``
-        disables the filter, and ``50``/``60`` selects the mains frequency.
+        ``50``/``60`` selects the mains frequency; None, ``"off"``, ``0`` or
+        ``False`` disables the filter.
         """
-        if value is None:
-            return ""
-        if value is False or value == 0 or str(value).lower() == "off":
+        if value is None or value is False or value == 0:
+            return "--mains-notch off"
+        if str(value).lower() == "off":
             return "--mains-notch off"
         if value in (50, 60, "50", "60"):
             return f"--mains-notch {value}"
         raise ValueError(
-            "mains_notch must be 50, 60, 'off'/0/False to disable, or None to "
-            f"leave unchanged (got {value!r})"
+            "mains_notch must be 50, 60, or None/'off'/0/False to disable "
+            f"(got {value!r})"
         )
 
     def _multi_or(self, resp: dict, key: str):
@@ -681,22 +682,29 @@ class SifiBridge:
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
+    #
+    # A `configure_*` call states the sensor's whole configuration, not a
+    # patch on it. Every parameter has a default and every flag is always
+    # sent, so anything the caller leaves out is reset to that default rather
+    # than kept. This makes a single call fully determine the sensor — you can
+    # read one line and know exactly what the device will do — at the cost
+    # that `configure_emg(fs=1000)` also returns the EMG filters to their
+    # defaults. Pass the settings you care about in the same call.
 
     def configure_sensors(
         self,
-        ecg: bool | None = None,
-        emg: bool | None = None,
-        eda: bool | None = None,
-        imu: bool | None = None,
-        ppg: bool | None = None,
+        ecg: bool = False,
+        emg: bool = False,
+        eda: bool = False,
+        imu: bool = False,
+        ppg: bool = False,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
-        """Enable or disable sensors.
+        """Set which sensors are enabled.
 
-        Every parameter is optional: a sensor left as None keeps its current
-        state, so `configure_sensors(ppg=True)` enables PPG without disturbing
-        the others.
+        This states the full set: a sensor left out is **disabled**, so
+        `configure_sensors(emg=True)` enables EMG and turns the other four off.
 
         :param all: Apply to every managed device.
         :param devices: Device handle, or sequence of handles, to apply to.
@@ -715,26 +723,26 @@ class SifiBridge:
 
     def configure_ecg(
         self,
-        fs: int | None = None,
-        dc_notch: bool | None = None,
-        mains_notch: int | str | None = None,
-        bandpass: bool | None = None,
-        flo: int | None = None,
-        fhi: int | None = None,
+        fs: int = 500,
+        dc_notch: bool = True,
+        mains_notch: int | str | None = 50,
+        bandpass: bool = True,
+        flo: int = 0,
+        fhi: int = 30,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
         """Configure the ECG sensor. See sifibridge `help configure ecg`.
 
-        Every parameter is optional and defaults to None, meaning "leave this
-        setting as it is on the device". `configure_ecg(fs=1000)` changes only
-        the sampling rate and preserves the filters you configured earlier.
+        This states the sensor's whole configuration: any parameter left out
+        goes to the default shown below, not to whatever the device currently
+        has. `configure_ecg(fs=1000)` therefore also restores the default
+        filters.
 
         :param fs: Sampling rate in Hz. Possible values: 250, 500, 1000, 2000.
         :param dc_notch: Enable the DC notch filter.
-        :param mains_notch: Mains notch frequency in Hz: 50 or 60. Pass
-            ``"off"`` (or ``0``/``False``) to disable the filter, None to leave
-            it unchanged.
+        :param mains_notch: Mains notch frequency in Hz: 50 or 60. Pass None
+            (or ``"off"``/``0``/``False``) to disable the filter.
         :param bandpass: Enable the bandpass filter.
         :param flo: Bandpass filter lower cutoff frequency in Hz.
         :param fhi: Bandpass filter higher cutoff frequency in Hz.
@@ -751,26 +759,26 @@ class SifiBridge:
 
     def configure_emg(
         self,
-        fs: int | None = None,
-        dc_notch: bool | None = None,
-        mains_notch: int | str | None = None,
-        bandpass: bool | None = None,
-        flo: int | None = None,
-        fhi: int | None = None,
+        fs: int = 2000,
+        dc_notch: bool = True,
+        mains_notch: int | str | None = 50,
+        bandpass: bool = True,
+        flo: int = 20,
+        fhi: int = 450,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
         """Configure the EMG sensor. See sifibridge `help configure emg`.
 
-        Every parameter is optional and defaults to None, meaning "leave this
-        setting as it is on the device".
+        This states the sensor's whole configuration: any parameter left out
+        goes to the default shown below, not to whatever the device currently
+        has.
 
         :param fs: Sampling rate in Hz. Possible values: 500, 1000, 1600
             (SiFiBand only), 2000.
         :param dc_notch: Enable the DC notch filter.
-        :param mains_notch: Mains notch frequency in Hz: 50 or 60. Pass
-            ``"off"`` (or ``0``/``False``) to disable the filter, None to leave
-            it unchanged.
+        :param mains_notch: Mains notch frequency in Hz: 50 or 60. Pass None
+            (or ``"off"``/``0``/``False``) to disable the filter.
         :param bandpass: Enable the bandpass filter.
         :param flo: Bandpass filter lower cutoff frequency in Hz.
         :param fhi: Bandpass filter higher cutoff frequency in Hz.
@@ -787,29 +795,29 @@ class SifiBridge:
 
     def configure_eda(
         self,
-        fs: int | None = None,
-        dc_notch: bool | None = None,
-        mains_notch: int | str | None = None,
-        bandpass: bool | None = None,
-        flo: int | None = None,
-        fhi: int | None = None,
-        freq: int | None = None,
+        fs: int = 50,
+        dc_notch: bool = True,
+        mains_notch: int | str | None = 50,
+        bandpass: bool = True,
+        flo: int = 0,
+        fhi: int = 5,
+        freq: int = 0,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
         """Configure the EDA/BIOZ sensor.
 
-        Every parameter is optional and defaults to None, meaning "leave this
-        setting as it is on the device".
+        This states the sensor's whole configuration: any parameter left out
+        goes to the default shown below, not to whatever the device currently
+        has.
 
         **Warning**: Enabling BIOZ and ECG/EMG at the same time may cause
         interference and degrade ECG/EMG quality.
 
         :param fs: Sampling rate in Hz. Possible values: 4, 8, 16, 32, 50.
         :param dc_notch: Enable the DC notch filter.
-        :param mains_notch: Mains notch frequency in Hz: 50 or 60. Pass
-            ``"off"`` (or ``0``/``False``) to disable the filter, None to leave
-            it unchanged.
+        :param mains_notch: Mains notch frequency in Hz: 50 or 60. Pass None
+            (or ``"off"``/``0``/``False``) to disable the filter.
         :param bandpass: Enable the bandpass filter.
         :param flo: Bandpass filter lower cutoff frequency in Hz.
         :param fhi: Bandpass filter higher cutoff frequency in Hz.
@@ -828,20 +836,21 @@ class SifiBridge:
 
     def configure_ppg(
         self,
-        sps: int | None = None,
-        ir: int | None = None,
-        red: int | None = None,
-        green: int | None = None,
-        blue: int | None = None,
-        sens: PpgSensitivity | str | None = None,
-        avg: int | None = None,
+        sps: int = 100,
+        ir: int = 9,
+        red: int = 9,
+        green: int = 9,
+        blue: int = 9,
+        sens: PpgSensitivity | str = PpgSensitivity.MEDIUM,
+        avg: int = 1,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
         """Configure the PPG sensor. See sifibridge `help configure ppg`.
 
-        Every parameter is optional and defaults to None, meaning "leave this
-        setting as it is on the device".
+        This states the sensor's whole configuration: any parameter left out
+        goes to the default shown below, not to whatever the device currently
+        has.
 
         :param sps: Raw AFE sample rate in Hz. Possible values: 50, 100, 200,
             400, 800.
@@ -860,27 +869,19 @@ class SifiBridge:
         with ``avg=4`` yields 100 Hz — and is reported live in each packet's
         ``sample_rate``. The wrapper caps it at 200 Hz.
 
-        :raises ValueError: If only one of `sps`/`avg` is given, or if
-            ``sps / avg`` exceeds 200 Hz.
+        :raises ValueError: If `avg` is not positive, or if ``sps / avg``
+            exceeds 200 Hz.
         """
-        if (sps is None) != (avg is None):
+        if avg <= 0:
+            raise ValueError(f"avg must be positive, got {avg}")
+        effective = sps / avg
+        if effective > self._PPG_MAX_EFFECTIVE_RATE_HZ:
             raise ValueError(
-                "sps and avg must be set together: the effective output rate "
-                "is sps / avg and the wrapper caps it at "
-                f"{self._PPG_MAX_EFFECTIVE_RATE_HZ:g} Hz, which cannot be "
-                "checked from only one of the two"
+                f"Effective PPG output rate sps/avg = {sps}/{avg} = "
+                f"{effective:g} Hz exceeds the "
+                f"{self._PPG_MAX_EFFECTIVE_RATE_HZ:g} Hz cap; raise avg or "
+                "lower sps"
             )
-        if sps is not None:
-            if avg <= 0:
-                raise ValueError(f"avg must be positive, got {avg}")
-            effective = sps / avg
-            if effective > self._PPG_MAX_EFFECTIVE_RATE_HZ:
-                raise ValueError(
-                    f"Effective PPG output rate sps/avg = {sps}/{avg} = "
-                    f"{effective:g} Hz exceeds the "
-                    f"{self._PPG_MAX_EFFECTIVE_RATE_HZ:g} Hz cap; raise avg or "
-                    "lower sps"
-                )
         if isinstance(sens, str):
             sens = PpgSensitivity(sens)
         tail = self._join(
@@ -897,15 +898,16 @@ class SifiBridge:
 
     def configure_imu(
         self,
-        fs: int | None = None,
-        accel_range: int | None = None,
+        fs: int = 100,
+        accel_range: int = 16,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
         """Configure the IMU. See sifibridge `help configure imu`.
 
-        Every parameter is optional and defaults to None, meaning "leave this
-        setting as it is on the device".
+        This states the sensor's whole configuration: any parameter left out
+        goes to the default shown below, not to whatever the device currently
+        has.
 
         :param fs: Sampling rate in Hz. Possible values: 25, 50, 100, 200.
         :param accel_range: Accelerometer range in g. Possible values: 8, 16.
@@ -920,7 +922,7 @@ class SifiBridge:
         `info()`, and the pinned full scale for each part is in the device
         spec sheet.
         """
-        if accel_range is not None and accel_range not in (8, 16):
+        if accel_range not in (8, 16):
             raise ValueError(
                 f"accel_range must be 8 or 16 (got {accel_range}). sifibridge "
                 "2.0.0 dropped the narrower ranges: they buy no resolution "
@@ -935,16 +937,20 @@ class SifiBridge:
 
     def configure_temperature(
         self,
-        fs: float | None = None,
+        fs: float = 1.0,
         all: bool = False,
         devices: str | Sequence[str] | None = None,
     ):
         """Configure the skin temperature sensor.
 
-        :param fs: Sampling rate in Hz. Possible values: 0.1, 1, 2, 10. None
-            leaves it unchanged.
+        :param fs: Sampling rate in Hz. Possible values: 0.1, 1, 2, 10.
         :param all: Apply to every managed device.
         :param devices: Device handle, or sequence of handles, to apply to.
+
+        **NOTE**: temperature has no enable of its own — it is not part of
+        `configure_sensors` — but the device only emits it alongside an
+        otherwise active acquisition, so at least one other sensor must be
+        enabled for temperature packets to arrive.
         """
         # The binary's allowed values are "0.1", "1", "2", "10"; a Python float
         # renders 1.0 as "1.0", which clap rejects. ``_flag`` formats floats
@@ -1052,17 +1058,20 @@ class SifiBridge:
     def _build_sensor_filter_cmd(
         cls,
         sensor: str,
-        fs: int | None,
-        dc_notch: bool | None,
+        fs: int,
+        dc_notch: bool,
         mains_notch: int | str | None,
-        bandpass: bool | None,
-        flo: int | None,
-        fhi: int | None,
+        bandpass: bool,
+        flo: int,
+        fhi: int,
     ) -> str:
-        """Build the ``configure <sensor> ...`` tail, omitting unset parameters.
+        """Build the ``configure <sensor> ...`` tail.
 
-        Omission is meaningful: sifibridge 2.0.0 leaves a setting untouched
-        when its flag is absent, so a None parameter must emit nothing.
+        Every flag is emitted. sifibridge 2.0.0 would leave a setting untouched
+        if its flag were absent, but the wrapper's contract is that a
+        `configure_*` call states the sensor's whole configuration, so an
+        omitted parameter arrives here as its default and is sent like any
+        other.
         """
         return cls._join(
             sensor,
