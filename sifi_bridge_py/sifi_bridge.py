@@ -1477,6 +1477,11 @@ class SifiBridge:
         (``status-update`` -> ``status_update``, ``buffer list`` ->
         ``buffer_list``), which lets `_request` tell its own reply apart from
         an unsolicited line. Returns None for an empty command.
+
+        Verified against sifibridge 2.0.0 with a BioPoint on 2026-09-13 for
+        every command the wrapper sends except ``dfu``, whose success response
+        needs a real firmware package to observe. A wrong key here is not
+        fatal: `_request` falls back to the first response it saw.
         """
         parts = line.split()
         if not parts:
