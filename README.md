@@ -43,42 +43,24 @@ with `.get()`. `samples_lost` is likewise omitted on a healthy packet.
 
 `SifiBridge` is a context manager — leaving the `with` block closes the data socket and shuts down the subprocess. If you can't use `with`, call `sb.close()` explicitly when done.
 
-## A configure call states the whole sensor
+## Configuration is incremental
 
-Each `configure_*` call describes the sensor's **complete** configuration. Every parameter has a default and every one is sent, so anything you leave out is set to its default rather than kept:
+The wrapper mirrors the CLI: sifibridge leaves a setting untouched when its flag is absent, so every `configure_*` parameter defaults to `None` and only the parameters you actually pass are sent. `configure_emg(fs=1000)` here does exactly what `configure emg --fs 1000` does in the REPL.
 
 ```python
-sb.configure_emg(fs=2000, mains_notch=60, bandpass=True, flo=20, fhi=450)
-sb.configure_emg(fs=1000)   # fs is 1000 — and mains_notch is back to 50
+sb.configure_emg(fs=2000, mains_notch=50, bandpass=True, flo=20, fhi=450)
+sb.configure_emg(fs=1000)   # changes the rate; the filters above are untouched
 ```
 
-One line therefore tells you exactly what the device will do; you never have to know the prior state to read it. The flip side is that a "quick tweak" is not a tweak — put everything you care about in the same call.
+The same applies to `configure_sensors`: an omitted sensor keeps its current state, so `configure_sensors(ppg=True)` enables PPG without disabling anything else. To turn a sensor off, say so explicitly (`configure_sensors(ppg=False)`).
 
-`configure_sensors` works the same way: it states the full set, so `configure_sensors(emg=True)` enables EMG **and disables the other four**.
-
-```python
-sb.configure_sensors(emg=True)             # EMG only
-sb.configure_sensors(emg=True, imu=True)   # EMG and IMU, the rest off
-sb.configure_sensors()                     # everything off
-```
-
-The defaults are:
-
-| Call | Defaults |
-| --- | --- |
-| `configure_ecg` | `fs=500, dc_notch=True, mains_notch=50, bandpass=True, flo=0, fhi=30` |
-| `configure_emg` | `fs=2000, dc_notch=True, mains_notch=50, bandpass=True, flo=20, fhi=450` |
-| `configure_eda` | `fs=50, dc_notch=True, mains_notch=50, bandpass=True, flo=0, fhi=5, freq=0` |
-| `configure_ppg` | `sps=100, ir=red=green=blue=9, sens="medium", avg=1` |
-| `configure_imu` | `fs=100, accel_range=16` |
-| `configure_temperature` | `fs=1.0` |
-| `configure_sensors` | every sensor off |
-
-To disable the mains notch, pass `None` (or `"off"`, `0`, `False`):
+The mains notch is the one tri-state parameter, because "leave it alone" and "switch it off" are different things:
 
 ```python
-sb.configure_ecg(mains_notch=60)     # 60 Hz
-sb.configure_ecg(mains_notch=None)   # filter off
+sb.configure_ecg(mains_notch=50)      # 50 Hz
+sb.configure_ecg(mains_notch=60)      # 60 Hz
+sb.configure_ecg(mains_notch="off")   # disable it (0 and False also work)
+sb.configure_ecg(mains_notch=None)    # leave it however it is (the default)
 ```
 
 ## Targeting several devices
@@ -114,12 +96,12 @@ When you target more than one device, sifibridge answers with an aggregated resp
 
 **Sensor configuration**
 
-- `sb.configure_sensors(ecg=…, emg=…, eda=…, imu=…, ppg=…)` sets which sensors stream; unnamed ones are disabled.
+- `sb.configure_sensors(ecg=…, emg=…, eda=…, imu=…, ppg=…)` toggles which sensors stream.
 - `sb.configure_ecg(...)`, `configure_emg(...)`, `configure_eda(...)`, `configure_imu(...)`, `configure_ppg(...)`, `configure_temperature(...)` set per-sensor sampling rate, filtering and ranges.
 - `sb.set_onboard_filtering(enable)`, `sb.set_high_gain(enable)`, `sb.set_low_latency_mode(on)`, `sb.set_night_mode(on)`, `sb.set_ble_power(BleTxPower.LOW|MEDIUM|HIGH)`.
 - `sb.set_memory_mode(MemoryMode.STREAMING | DEVICE | BOTH)` controls whether data streams over BLE, lands on onboard flash, or both.
 
-PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**. Since `avg` defaults to 1, `configure_ppg(sps=400)` is over the cap and raises — raise `avg` in the same call.
+PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**. Set either one on its own if you like — the wrapper reads the other back from the device to work out what the rate will be.
 
 Temperature has no enable of its own and is not part of `configure_sensors`, but the device only emits it alongside an otherwise active acquisition, so at least one other sensor must be on.
 
@@ -200,7 +182,7 @@ SiFi Bridge 2.0.0 reworked the REPL, so this is a breaking release. The changes 
 | `sb.show()` | `sb.info()` |
 | `new` / `delete` device managers | gone — `connect()` creates the session, `disconnect()` removes it |
 | `configure_channels(...)` | `configure_sensors(...)` |
-| `configure_channels` left unnamed channels alone | `configure_sensors` disables them |
+| `configure_*` defaults overwrote every setting | omitted parameters are left untouched |
 | `configure_imu(gyro_range=…)` | removed; the FIFO pins the gyro full scale per IMU part |
 | `configure_imu(accel_range=2\|4\|8\|16)` | `8` or `16` only |
 | `configure_ppg(iir=…, ired=…)` | `configure_ppg(ir=…, red=…)`, capped at `sps/avg ≤ 200 Hz` |

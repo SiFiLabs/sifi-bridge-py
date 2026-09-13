@@ -120,6 +120,19 @@ class TestHardwareAcquisition(unittest.TestCase):
 
     # -- helpers ------------------------------------------------------
 
+    def _only(self, **sensors):
+        """Enable exactly the named sensors and disable the rest.
+
+        Necessary because `configure_sensors` is incremental: an omitted sensor
+        keeps its current state, so a test that only says ``ecg=True`` inherits
+        whatever the previous test left on. With every sensor streaming at once
+        the BLE link saturates and the sensor under test can go quiet, which
+        looks exactly like absent hardware.
+        """
+        states = {s: False for s in ("ecg", "emg", "eda", "imu", "ppg")}
+        states.update(sensors)
+        return self.sb.configure_sensors(**states)
+
     def _collect(self, getter, timeout: float) -> dict:
         """Start, wait for one packet from ``getter``, then stop.
 
@@ -156,11 +169,19 @@ class TestHardwareAcquisition(unittest.TestCase):
         self.assertIsInstance(self.sb.get_battery(), int)
 
     def test_sensor_states_follow_configure_sensors(self):
-        """The reported states must match what configure_sensors was told."""
-        self.sb.configure_sensors(ecg=True, imu=True)
+        """Enabling one sensor must leave the others exactly as they were."""
+        self.sb.configure_sensors(ecg=True, emg=False, eda=False, imu=False, ppg=False)
+        before = self.sb.get_sensor_states()
+        self.assertEqual(before.get("ecg"), True)
+        self.assertEqual(before.get("emg"), False)
+
+        self.sb.configure_sensors(emg=True)
+        after = self.sb.get_sensor_states()
+        self.assertEqual(after.get("emg"), True, "configure_sensors(emg=True) no-op")
         self.assertEqual(
-            self.sb.get_sensor_states(),
-            {"ecg": True, "emg": False, "eda": False, "imu": True, "ppg": False},
+            {s: v for s, v in after.items() if s != "emg"},
+            {s: v for s, v in before.items() if s != "emg"},
+            "enabling EMG also changed another sensor's state",
         )
 
     def test_timestamps_are_relative_to_start_time(self):
@@ -210,14 +231,14 @@ class TestHardwareAcquisition(unittest.TestCase):
     # -- per-sensor acquisition ---------------------------------------
 
     def test_ecg_acquisition(self):
-        self.sb.configure_sensors(ecg=True)
+        self._only(ecg=True)
         self.sb.configure_ecg(fs=500)
         packet = self._collect(self.sb.get_ecg, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.ECG.value)
         self.assertIn(SensorChannel.ECG.value, packet["data"])
 
     def test_emg_acquisition(self):
-        self.sb.configure_sensors(emg=True)
+        self._only(emg=True)
         self.sb.configure_emg(fs=2000)
         packet = self._collect(self.sb.get_emg, 8.0)
         # BioPoint reports `emg`, SiFiBand reports `emg_armband`.
@@ -228,14 +249,14 @@ class TestHardwareAcquisition(unittest.TestCase):
         self.assertTrue(packet["data"])
 
     def test_eda_acquisition(self):
-        self.sb.configure_sensors(eda=True)
+        self._only(eda=True)
         self.sb.configure_eda(fs=50)
         packet = self._collect(self.sb.get_eda, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.EDA.value)
         self.assertIn(SensorChannel.EDA.value, packet["data"])
 
     def test_imu_acquisition(self):
-        self.sb.configure_sensors(imu=True)
+        self._only(imu=True)
         self.sb.configure_imu(fs=100)
         packet = self._collect(self.sb.get_imu, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.IMU.value)
@@ -243,7 +264,7 @@ class TestHardwareAcquisition(unittest.TestCase):
             self.assertIn(channel, packet["data"])
 
     def test_ppg_acquisition(self):
-        self.sb.configure_sensors(ppg=True)
+        self._only(ppg=True)
         self.sb.configure_ppg(sps=100, avg=1)
         packet = self._collect(self.sb.get_ppg, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.PPG.value)
@@ -252,9 +273,11 @@ class TestHardwareAcquisition(unittest.TestCase):
         )
 
     def test_temperature_acquisition(self):
-        # Temperature has no enable of its own, but the device only emits it
-        # alongside an otherwise active acquisition, so pair it with ECG.
-        self.sb.configure_sensors(ecg=True)
+        # Temperature is not part of `configure sensors` and has no enable of
+        # its own, but the device only emits it alongside an otherwise active
+        # acquisition: with all five biosensors off, nothing arrives. So pair
+        # it with ECG rather than running it alone.
+        self._only(ecg=True)
         self.sb.configure_temperature(fs=1.0)
         # Temperature streams at ~1 Hz, so allow extra time for the first packet.
         packet = self._collect(self.sb.get_temperature, 15.0)
@@ -262,7 +285,7 @@ class TestHardwareAcquisition(unittest.TestCase):
         self.assertIn(SensorChannel.TEMPERATURE.value, packet["data"])
 
     def test_multi_sensor_acquisition(self):
-        self.sb.configure_sensors(ecg=True, imu=True)
+        self._only(ecg=True, imu=True)
         self.sb.configure_ecg(fs=500)
         self.sb.configure_imu(fs=100)
         self.sb.clear_data_buffer()
@@ -280,7 +303,7 @@ class TestHardwareAcquisition(unittest.TestCase):
     # -- events & status ----------------------------------------------
 
     def test_event_appears_in_stream(self):
-        self.sb.configure_sensors(ecg=True)
+        self._only(ecg=True)
         self.sb.configure_ecg(fs=500)
         self.sb.clear_data_buffer()
         self.assertTrue(self.sb.start())
@@ -314,7 +337,7 @@ class TestHardwareAcquisition(unittest.TestCase):
     # -- buffer subsystem, end to end ---------------------------------
 
     def test_buffer_end_to_end(self):
-        self.sb.configure_sensors(ecg=True)
+        self._only(ecg=True)
         self.sb.configure_ecg(fs=500)
         self.sb.buffer_clear(all=True)
 
@@ -383,15 +406,14 @@ def _changed_paths(before: dict, after: dict) -> set:
 
 
 @unittest.skipUnless(_HW, "set SIFI_HW=<handle|1> to run hardware tests")
-class TestConfigurationIsDeclarative(unittest.TestCase):
-    """The round-trip proof that a `configure_*` call states the whole sensor.
+class TestPartialConfigurationPreservesSettings(unittest.TestCase):
+    """The round-trip proof that a partial `configure_*` leaves the rest alone.
 
-    Every parameter has a default and every flag is sent, so a parameter the
-    caller leaves out is reset to that default rather than kept.
-    `tests/test_unit.py` proves the flags are all on the command line; only a
-    real device proves the device ends up in the state they describe. sifibridge
-    would honour the other reading — an absent flag leaves its setting alone —
-    so this is the test that would catch the wrapper drifting back to it.
+    Every configuration parameter defaults to None, meaning "leave as-is", and
+    the wrapper omits the flag entirely. `tests/test_unit.py` proves the flag
+    is omitted; only a real device proves the setting actually survives. This
+    reads the device's configuration, changes exactly one parameter, reads it
+    back, and asserts nothing else moved.
     """
 
     @classmethod
@@ -410,77 +432,83 @@ class TestConfigurationIsDeclarative(unittest.TestCase):
             finally:
                 sb.close()
 
-    def _sensor_config(self, sensor: str) -> dict:
+    def _configuration(self) -> dict:
         config = self.sb.get_configuration()
         if not config:
             self.skipTest(
                 "device info() has no 'configuration' block (keys: "
-                f"{sorted(self.sb.info())})"
+                f"{sorted(self.sb.info())}); firmware may predate sifibridge 2.0.0"
             )
-        block = config.get(sensor)
-        if not isinstance(block, dict):
-            self.skipTest(f"device reports no {sensor} configuration")
-        return block
+        return config
 
-    def test_partial_emg_call_resets_the_other_settings(self):
-        # Put EMG somewhere far from its defaults...
-        self.sb.configure_emg(
-            fs=1000,
-            dc_notch=False,
-            mains_notch=60,
-            bandpass=False,
-            flo=30,
-            fhi=400,
-        )
-        moved = self._sensor_config("emg")
-        self.assertEqual(moved.get("fs"), 1000.0)
-        self.assertEqual(moved.get("dc_notch"), False)
-        self.assertEqual(moved.get("mains_notch"), 60)
+    def _assert_only_changed(self, apply, field: str):
+        """Apply a one-parameter change; assert only `field` moved."""
+        before = self._configuration()
+        apply()
+        after = self._configuration()
 
-        # ...then name only fs. Everything else must come back to default.
-        self.sb.configure_emg(fs=2000)
-        after = self._sensor_config("emg")
-        self.assertEqual(after.get("fs"), 2000.0)
-        self.assertEqual(after.get("dc_notch"), True, "dc_notch was not defaulted")
-        self.assertEqual(after.get("mains_notch"), 50, "mains_notch was not defaulted")
-        filt = after.get("filter")
-        if isinstance(filt, dict):
-            self.assertEqual(filt.get("enabled"), True, "bandpass was not defaulted")
-            self.assertEqual(filt.get("fc_low"), 20, "bandpass-low was not defaulted")
-            self.assertEqual(filt.get("fc_high"), 450, "bandpass-high was not defaulted")
-
-    def test_partial_imu_call_resets_the_accel_range(self):
-        self.sb.configure_imu(fs=25, accel_range=8)
-        moved = self._sensor_config("imu")
-        self.assertEqual(moved.get("accel_range"), 8)
-
-        self.sb.configure_imu(fs=100)
-        after = self._sensor_config("imu")
-        self.assertEqual(after.get("fs"), 100.0)
-        self.assertEqual(after.get("accel_range"), 16, "accel_range was not defaulted")
-
-    def test_configure_sensors_disables_the_unnamed(self):
-        self.sb.configure_sensors(ecg=True, emg=True, eda=True, imu=True, ppg=True)
+        changed = _changed_paths(before, after)
         self.assertTrue(
-            all(self.sb.get_sensor_states().values()), "could not enable every sensor"
+            changed,
+            f"configuring {field} changed nothing — the test cannot tell "
+            "preservation from a no-op, pick a different value",
         )
-
-        self.sb.configure_sensors(emg=True)
-        states = self.sb.get_sensor_states()
-        self.assertEqual(states.get("emg"), True)
+        unexpected = {path for path in changed if path[-1] != field}
         self.assertEqual(
-            {s: v for s, v in states.items() if s != "emg"},
-            {s: False for s in states if s != "emg"},
-            "naming only EMG left another sensor enabled",
+            unexpected,
+            set(),
+            f"configuring only {field} also changed {sorted(unexpected)}; "
+            "an omitted flag is supposed to leave its setting untouched",
         )
 
-    def test_mains_notch_none_disables(self):
-        self.sb.configure_ecg(mains_notch=50)
-        self.assertEqual(self._sensor_config("ecg").get("mains_notch"), 50)
-        self.sb.configure_ecg(mains_notch=None)
-        # The device reports the filter as off; the exact encoding is
-        # firmware-defined, so accept anything that is not a live frequency.
-        self.assertNotIn(self._sensor_config("ecg").get("mains_notch"), (50, 60))
+    def test_emg_fs_only_changes_fs(self):
+        # Put the device in a known state, then move one parameter off it.
+        self.sb.configure_emg(
+            fs=2000,
+            dc_notch=True,
+            mains_notch=50,
+            bandpass=True,
+            flo=20,
+            fhi=450,
+        )
+        self._assert_only_changed(lambda: self.sb.configure_emg(fs=1000), "fs")
+
+    def test_ecg_mains_notch_only_changes_mains_notch(self):
+        self.sb.configure_ecg(
+            fs=500,
+            dc_notch=True,
+            mains_notch=50,
+            bandpass=True,
+            flo=0,
+            fhi=30,
+        )
+        before = self._configuration()
+        self.sb.configure_ecg(mains_notch=60)
+        after = self._configuration()
+        changed = _changed_paths(before, after)
+        self.assertTrue(changed, "switching the mains notch to 60 Hz changed nothing")
+        # The field name for the notch is firmware-defined; assert only that
+        # every changed path sits under ECG and mentions the notch.
+        for path in changed:
+            self.assertTrue(
+                any("ecg" in part.lower() for part in path)
+                and any("notch" in part.lower() for part in path),
+                f"configuring only the ECG mains notch also changed {path}",
+            )
+
+    def test_enabling_one_sensor_leaves_the_others(self):
+        self.sb.configure_sensors(ecg=False, emg=True, eda=False, imu=False, ppg=False)
+        before = self._configuration()
+        self.sb.configure_sensors(imu=True)
+        after = self._configuration()
+        changed = _changed_paths(before, after)
+        self.assertTrue(changed, "enabling the IMU changed nothing")
+        for path in changed:
+            self.assertTrue(
+                any("imu" in part.lower() for part in path),
+                f"enabling only the IMU also changed {path}",
+            )
+
 
 if __name__ == "__main__":
     import logging
