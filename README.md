@@ -151,6 +151,24 @@ t = absolute_timestamps(emg, start)   # one Unix epoch timestamp per sample
 
 Don't use a packet's `received_at` for this: that is when the host received the packet, including BLE transit and buffering, not a per-sample time.
 
+## Where the wrapper differs from the CLI
+
+The wrapper aims to behave exactly as the REPL does — same flags, same
+semantics, same argument rules — so that `configure_emg(fs=1000)` and
+`configure emg --fs 1000` are interchangeable. It deviates in four places, all
+deliberate:
+
+| Deviation | Why |
+| --- | --- |
+| `set_motor_intensity` accepts 1–10; the CLI accepts 0–10 | 0 is not a useful intensity, and reaching it by accident is easier than reaching it on purpose. Use `set_motor(False)` to stop the motor. |
+| PPG effective rate (`sps / avg`) is capped at 200 Hz; the CLI allows 800 | Above this the BLE link cannot keep up and packets start reporting `samples_lost`. Better to refuse the configuration than to hand back lossy data. |
+| Paths and device names containing whitespace or `;` raise `ValueError` | The REPL splits on whitespace with no quoting and treats `;` as a command separator, so these cannot be expressed at all. The CLI would mis-parse them; the wrapper says why. |
+| `download_memory_ble` / `download_memory_serial` also export to file | `download-memory` only fills the buffers in 2.0.0. These run `buffer export` afterwards so a download produces files, as it did in 1.x. Use `buffer_pull` if you want the samples in Python instead. |
+
+Everything else — including the mutual exclusions on `buffer clear` and
+`buffer pull`, and the allowed value sets for every sensor parameter — mirrors
+what the CLI itself enforces.
+
 ## Error handling
 
 ```python
