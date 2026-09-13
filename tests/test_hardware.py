@@ -27,6 +27,8 @@ intentionally excluded.
 **NOTE**: the LED and motor tests physically actuate the device.
 """
 
+from __future__ import annotations
+
 import os
 import time
 import tempfile
@@ -177,7 +179,7 @@ class TestHardwareAcquisition(unittest.TestCase):
 
     def test_ppg_acquisition(self):
         self.sb.configure_sensors(ppg=True)
-        self.sb.configure_ppg(sps=100)
+        self.sb.configure_ppg(sps=100, avg=1)
         packet = self._collect(self.sb.get_ppg, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.PPG.value)
         self.assertTrue(
@@ -185,7 +187,11 @@ class TestHardwareAcquisition(unittest.TestCase):
         )
 
     def test_temperature_acquisition(self):
-        self.sb.configure_sensors()  # disable the others
+        # Every parameter is optional now, so "disable the others" has to
+        # be said explicitly: an omitted sensor keeps its current state.
+        self.sb.configure_sensors(
+            ecg=False, emg=False, eda=False, imu=False, ppg=False
+        )
         self.sb.configure_temperature(fs=1.0)
         # Temperature streams at ~1 Hz, so allow extra time for the first packet.
         packet = self._collect(self.sb.get_temperature, 15.0)
@@ -286,6 +292,136 @@ class TestHardwareAcquisition(unittest.TestCase):
 
     def test_motor_intensity(self):
         self.assertIsInstance(self.sb.set_motor_intensity(5), dict)
+
+
+def _flatten(obj, prefix=()):
+    """Yield ``(path, leaf)`` pairs for a nested mapping.
+
+    Lets two `info()["configuration"]` snapshots be compared without the test
+    knowing how sifibridge nests the configuration block.
+    """
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            for item in _flatten(value, prefix + (str(key),)):
+                yield item
+    else:
+        yield prefix, obj
+
+
+def _changed_paths(before: dict, after: dict) -> set:
+    """The set of paths whose value differs between two configurations."""
+    flat_before = dict(_flatten(before))
+    flat_after = dict(_flatten(after))
+    return {
+        path
+        for path in set(flat_before) | set(flat_after)
+        if flat_before.get(path) != flat_after.get(path)
+    }
+
+
+@unittest.skipUnless(_HW, "set SIFI_HW=<handle|1> to run hardware tests")
+class TestPartialConfigurationPreservesSettings(unittest.TestCase):
+    """The round-trip proof that a partial `configure_*` leaves the rest alone.
+
+    Every configuration parameter defaults to None, meaning "leave as-is", and
+    the wrapper omits the flag entirely. `tests/test_unit.py` proves the flag
+    is omitted; only a real device proves the setting actually survives. This
+    reads the device's configuration, changes exactly one parameter, reads it
+    back, and asserts nothing else moved.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sb = _open_connected()
+        if sb is None:
+            raise unittest.SkipTest(f"could not connect to device {_HW!r}")
+        cls.sb = sb
+
+    @classmethod
+    def tearDownClass(cls):
+        sb = getattr(cls, "sb", None)
+        if sb is not None:
+            try:
+                sb.disconnect()
+            finally:
+                sb.close()
+
+    def _configuration(self) -> dict:
+        config = self.sb.get_configuration()
+        if not config:
+            self.skipTest(
+                "device info() has no 'configuration' block (keys: "
+                f"{sorted(self.sb.info())}); firmware may predate sifibridge 2.0.0"
+            )
+        return config
+
+    def _assert_only_changed(self, apply, field: str):
+        """Apply a one-parameter change; assert only `field` moved."""
+        before = self._configuration()
+        apply()
+        after = self._configuration()
+
+        changed = _changed_paths(before, after)
+        self.assertTrue(
+            changed,
+            f"configuring {field} changed nothing — the test cannot tell "
+            "preservation from a no-op, pick a different value",
+        )
+        unexpected = {path for path in changed if path[-1] != field}
+        self.assertEqual(
+            unexpected,
+            set(),
+            f"configuring only {field} also changed {sorted(unexpected)}; "
+            "an omitted flag is supposed to leave its setting untouched",
+        )
+
+    def test_emg_fs_only_changes_fs(self):
+        # Put the device in a known state, then move one parameter off it.
+        self.sb.configure_emg(
+            fs=2000,
+            dc_notch=True,
+            mains_notch=50,
+            bandpass=True,
+            flo=20,
+            fhi=450,
+        )
+        self._assert_only_changed(lambda: self.sb.configure_emg(fs=1000), "fs")
+
+    def test_ecg_mains_notch_only_changes_mains_notch(self):
+        self.sb.configure_ecg(
+            fs=500,
+            dc_notch=True,
+            mains_notch=50,
+            bandpass=True,
+            flo=0,
+            fhi=30,
+        )
+        before = self._configuration()
+        self.sb.configure_ecg(mains_notch=60)
+        after = self._configuration()
+        changed = _changed_paths(before, after)
+        self.assertTrue(changed, "switching the mains notch to 60 Hz changed nothing")
+        # The field name for the notch is firmware-defined; assert only that
+        # every changed path sits under ECG and mentions the notch.
+        for path in changed:
+            self.assertTrue(
+                any("ecg" in part.lower() for part in path)
+                and any("notch" in part.lower() for part in path),
+                f"configuring only the ECG mains notch also changed {path}",
+            )
+
+    def test_enabling_one_sensor_leaves_the_others(self):
+        self.sb.configure_sensors(ecg=False, emg=True, eda=False, imu=False, ppg=False)
+        before = self._configuration()
+        self.sb.configure_sensors(imu=True)
+        after = self._configuration()
+        changed = _changed_paths(before, after)
+        self.assertTrue(changed, "enabling the IMU changed nothing")
+        for path in changed:
+            self.assertTrue(
+                any("imu" in part.lower() for part in path),
+                f"enabling only the IMU also changed {path}",
+            )
 
 
 if __name__ == "__main__":

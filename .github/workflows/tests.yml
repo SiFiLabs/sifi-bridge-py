@@ -1,21 +1,23 @@
 name: tests
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-# Only the Tier 1 unit tests run in CI. They mock the single `_request`
-# chokepoint, so they need neither a sifibridge binary nor hardware.
+# Tier 1 (tests/test_unit.py) mocks the single `_request` chokepoint, so it
+# needs neither a sifibridge binary nor hardware.
 #
-# Tier 2 (tests/test_integration.py) needs a sifibridge binary whose REPL API
-# matches this wrapper. The pinned `sifibridge-bin` release does not yet include
-# the reworked 2.0.0 REPL commands (e.g. `buffer list`), so it can't be run here
-# yet. Once `sifibridge-bin` is bumped to a release that matches, add a step
-# that downloads the matching binary, exports `SIFIBRIDGE_EXE`, and runs
-# `python -m unittest tests.test_integration`.
+# Tier 2 (tests/test_integration.py) spawns a real sifibridge and feeds it every
+# command line the wrapper can generate. The wrapper builds those lines as
+# strings, so a renamed or removed flag is invisible to Tier 1 — this is the job
+# that catches it, and it is why the sifibridge version below is pinned.
 #
 # Tier 3 (tests/test_hardware.py) needs a live device and never runs in CI.
+
+on:
+  push:
+  pull_request:
+
+env:
+  # The sifibridge release this wrapper targets. Bump together with
+  # `sifibridge-bin` in pyproject.toml.
+  SIFIBRIDGE_VERSION: "2.0.0"
 
 jobs:
   unit:
@@ -45,3 +47,60 @@ jobs:
 
       - name: Unit tests (Tier 1)
         run: uv run python -m unittest tests.test_unit -v
+
+  integration:
+    name: Tier 2 integration tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            exe: sifibridge
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            exe: sifibridge
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            exe: sifibridge.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Download sifibridge ${{ env.SIFIBRIDGE_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="sifibridge-${SIFIBRIDGE_VERSION}-${{ matrix.target }}"
+          url="https://github.com/SiFiLabs/sifi-bridge-pub/releases/download/${SIFIBRIDGE_VERSION}/${name}.${{ matrix.archive }}"
+          mkdir -p bridge
+          curl -fsSL "$url" -o "bridge/archive.${{ matrix.archive }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            unzip -q "bridge/archive.zip" -d bridge
+          else
+            tar -xzf "bridge/archive.tar.gz" -C bridge
+          fi
+          exe="$(find bridge -name '${{ matrix.exe }}' -type f | head -n1)"
+          chmod +x "$exe"
+          echo "SIFIBRIDGE_EXE=$(cd "$(dirname "$exe")" && pwd)/${{ matrix.exe }}" >> "$GITHUB_ENV"
+
+      - name: Integration tests (Tier 2)
+        run: uv run python -m unittest tests.test_integration -v

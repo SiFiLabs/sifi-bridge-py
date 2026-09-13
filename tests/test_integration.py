@@ -18,7 +18,9 @@ Tests that need a connected device live in ``test_hardware.py`` (gated on the
 import unittest
 
 import sifi_bridge_py as sbp
-from sifi_bridge_py.sifi_bridge import SifiBridgeError
+from sifi_bridge_py.sifi_bridge import PpgSensitivity, SifiBridgeError
+
+from .test_unit import make_sb
 
 
 class TestIntegration(unittest.TestCase):
@@ -125,6 +127,182 @@ class TestIntegration(unittest.TestCase):
     def test_buffer_info_without_device_raises(self):
         with self.assertRaises(SifiBridgeError):
             self.sb.buffer_info()
+
+
+# Every wrapper method and the arguments to exercise it with. The point is
+# coverage of the *generated command line*, not of the outcome, so one
+# representative call per distinct flag combination is enough.
+COMMAND_MATRIX = [
+    ("configure_sensors", (), {"ecg": True, "emg": False}),
+    ("configure_sensors", (), {}),
+    ("configure_ecg", (), {"fs": 1000}),
+    (
+        "configure_ecg",
+        (),
+        {
+            "fs": 500,
+            "dc_notch": True,
+            "mains_notch": 50,
+            "bandpass": True,
+            "flo": 0,
+            "fhi": 30,
+        },
+    ),
+    ("configure_ecg", (), {"mains_notch": "off"}),
+    ("configure_ecg", (), {"mains_notch": 60}),
+    ("configure_emg", (), {"fs": 2000, "bandpass": False}),
+    ("configure_eda", (), {"fs": 50, "freq": 0}),
+    ("configure_ppg", (), {"sps": 400, "avg": 2}),
+    ("configure_ppg", (), {"ir": 9, "red": 9, "green": 9, "blue": 9}),
+    ("configure_ppg", (), {"sens": PpgSensitivity.MAX}),
+    ("configure_imu", (), {"fs": 100, "accel_range": 16}),
+    ("configure_imu", (), {"accel_range": 8}),
+    ("configure_temperature", (), {"fs": 1.0}),
+    ("configure_temperature", (), {"fs": 0.1}),
+    ("set_onboard_filtering", (True,), {}),
+    ("set_high_gain", (False,), {}),
+    ("set_memory_mode", ("both",), {}),
+    ("set_low_latency_mode", (True,), {}),
+    ("set_ble_power", ("high",), {}),
+    ("set_night_mode", (False,), {}),
+    ("set_motor_intensity", (1,), {}),
+    ("set_motor_intensity", (10,), {}),
+    ("set_motor", (True,), {}),
+    ("set_led", (1, True), {}),
+    ("set_led", (2, False), {}),
+    ("set_status_updates", (True,), {}),
+    ("erase_onboard_memory", (), {}),
+    ("erase_onboard_memory", (), {"format": True}),
+    ("power_off", (), {}),
+    ("start", (), {}),
+    ("start", (), {"set_default": True}),
+    ("stop", (), {}),
+    ("send_event", (), {}),
+    ("rename_device", ("shortname",), {}),
+    ("rename_device", (None,), {}),
+    ("connect", ("BioPoint",), {}),
+    ("disconnect", (), {}),
+    ("info", (), {}),
+    ("buffer_export", (), {"fmt": "csv", "output_dir": "."}),
+    ("buffer_export", (), {"fmt": "hdf5", "output_dir": "."}),
+    ("buffer_list", (), {}),
+    ("buffer_info", (), {"acquisition_id": 1}),
+    ("buffer_pull", ("ecg",), {}),
+    ("buffer_pull", (["ecg", "imu"],), {"last_seconds": 5}),
+    ("buffer_pull", ("emg",), {"from_": 1.0, "to": 3.0}),
+    ("buffer_clear", (), {"all": True}),
+    ("buffer_clear", (), {"acquisition_id": 1}),
+    ("dfu", ("nonexistent-package.zip",), {}),
+    ("download_memory_ble", ("."), {}),
+    ("download_memory_serial", ("COM3", "."), {}),
+]
+
+# The same matrix again, targeted at several devices. `--all` and `--devices`
+# sit in different places per command (`configure` takes them before its
+# subcommand), which is exactly the kind of thing a parse check catches.
+TARGETED_MATRIX = [
+    ("configure_ecg", (), {"fs": 1000, "all": True}),
+    ("configure_ecg", (), {"fs": 1000, "devices": ["dev1", "dev2"]}),
+    ("configure_sensors", (), {"emg": True, "all": True}),
+    ("configure_imu", (), {"fs": 50, "all": True}),
+    ("set_memory_mode", ("streaming",), {"all": True}),
+    ("set_night_mode", (True,), {"devices": "dev1"}),
+    ("set_led", (1, True), {"all": True}),
+    ("set_motor", (False,), {"all": True}),
+    ("set_motor_intensity", (5,), {"all": True}),
+    ("set_status_updates", (False,), {"all": True}),
+    ("erase_onboard_memory", (), {"all": True}),
+    ("power_off", (), {"all": True}),
+    ("start", (), {"all": True}),
+    ("stop", (), {"devices": ["dev1", "dev2"]}),
+    ("send_event", (), {"all": True}),
+]
+
+
+class TestGeneratedCommandsParse(unittest.TestCase):
+    """Every command line the wrapper can generate must parse.
+
+    The wrapper builds REPL command lines as strings, so a renamed or removed
+    flag is invisible to Python and to the Tier 1 tests — both keep passing
+    while the binary rejects every call. That is exactly how
+    ``configure imu --gyro-range`` survived into the 2.0.0 betas after
+    sifibridge dropped the flag.
+
+    This drives each wrapper method with a recorder to capture the exact line
+    it would send, then feeds that line to a real sifibridge and asserts the
+    reply is not a *parse* error. No device is connected, so the commands fail
+    with runtime errors ("device '' not found"), which is fine and expected:
+    clap prefixes its own diagnostics with ``error: ``, and nothing else does.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.sb = sbp.SifiBridge()
+        except Exception as e:  # binary missing / wrong platform
+            raise unittest.SkipTest(f"sifibridge binary unavailable: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        sb = getattr(cls, "sb", None)
+        if sb is not None:
+            sb.close()
+
+    @staticmethod
+    def _lines_for(method: str, args, kwargs) -> list:
+        """Capture the REPL line(s) a wrapper call would send."""
+        sb, rec = make_sb()
+        getattr(sb, method)(*args, **kwargs)
+        return rec.calls
+
+    def _assert_parses(self, line: str):
+        try:
+            self.sb._request(line, timeout=10.0)
+        except SifiBridgeError as e:
+            # clap renders its diagnostics with an "error: " prefix; runtime
+            # failures ("device '' not found", "No device selected") do not.
+            self.assertFalse(
+                e.message.startswith("error: "),
+                f"sifibridge could not parse {line!r}:\n{e.message}",
+            )
+
+    def test_generated_commands_parse(self):
+        for method, args, kwargs in COMMAND_MATRIX + TARGETED_MATRIX:
+            for line in self._lines_for(method, args, kwargs):
+                with self.subTest(method=method, line=line):
+                    self._assert_parses(line)
+
+    def test_matrix_covers_every_public_command(self):
+        """Guard against a new wrapper command escaping the parse check."""
+        covered = {m for m, _, _ in COMMAND_MATRIX + TARGETED_MATRIX}
+        # Methods that send no REPL command, or whose line is covered by
+        # another entry (e.g. select_device -> `select` + `info`).
+        exempt = {
+            "close",
+            "connect",
+            "clear_data_buffer",
+            "get_active_device",
+            "get_configuration",
+            "get_data",
+            "get_device_state",
+            "get_ecg",
+            "get_eda",
+            "get_emg",
+            "get_event",
+            "get_imu",
+            "get_ppg",
+            "get_sensors",
+            "get_temperature",
+            "list_devices",
+            "select_device",
+        }
+        public = {
+            name
+            for name in dir(sbp.SifiBridge)
+            if not name.startswith("_") and callable(getattr(sbp.SifiBridge, name))
+        }
+        missing = public - covered - exempt
+        self.assertEqual(missing, set(), f"not covered by the parse check: {missing}")
 
 
 if __name__ == "__main__":
