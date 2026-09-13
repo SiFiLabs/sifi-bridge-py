@@ -103,6 +103,13 @@ When you target more than one device, sifibridge answers with an aggregated resp
 
 PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**. Set either one on its own if you like — the wrapper reads the other back from the device to work out what the rate will be.
 
+If you would rather say what output rate you want, `sb.configure_ppg_fs(fs)` solves for a pair that delivers it, preferring the most averaging (the cleanest signal) unless you pass `avg` yourself. Reachable rates are 25, 50, 100 and 200 Hz.
+
+```python
+sb.configure_ppg_fs(100)          # sps=800, avg=8 — most averaging
+sb.configure_ppg_fs(100, avg=1)   # sps=100, avg=1 — least LED duty
+```
+
 Temperature has no enable of its own and is not part of `configure_sensors`, but the device only emits it alongside an otherwise active acquisition, so at least one other sensor must be on.
 
 **Acquisition & data**
@@ -110,6 +117,7 @@ Temperature has no enable of its own and is not part of `configure_sensors`, but
 - `sb.start(set_default=False)` / `sb.stop()` toggle streaming. `set_default=True` stores the current configuration as the device's power-on default.
 - `sb.get_ecg(timeout=…)`, `get_emg`, `get_eda`, `get_imu`, `get_ppg`, `get_temperature`, `get_event` pop the next packet of that sensor. Each sensor has its own internal queue, so calling `get_ecg()` does **not** drop EMG data that arrived in between. Returns `{}` on timeout. **NOTE**: each packet is also routed to a generic queue read by `get_data()` — don't mix the two APIs on the same instance, or you'll see duplicates.
 - `sb.clear_data_buffer()` drains all internal queues.
+- `DataPacket.from_dict(packet)` wraps a packet dict in a typed view when attribute access reads better than key lookups. Opt-in — the getters keep returning plain dicts, and the original is kept on `.raw`.
 - `sb.send_event()` emits a software event, which arrives in the stream as an `event` packet timestamped on the device — useful for marking experiment landmarks.
 - `sb.set_status_updates(on)` toggles the ~1 Hz status packets (battery, memory used, device state).
 
@@ -131,6 +139,27 @@ Temperature has no enable of its own and is not part of `configure_sensors`, but
 - `sb.dfu(package_path)` updates the device firmware over BLE.
 
 > **Paths and names cannot contain spaces.** The sifibridge REPL splits command lines on whitespace and does not support quoting, so `output_dir`, the DFU package path, and device names/handles must be space-free. The wrapper raises `ValueError` up front rather than sending something the CLI would mis-parse. Export to a path without spaces and move the files afterwards.
+
+## Typed packets
+
+The getters return plain dicts. When that gets tedious, wrap one:
+
+```python
+from sifi_bridge_py import BioChannel, DataPacket, PacketType
+
+raw = sb.get_imu(timeout=2.0)
+if raw:
+    packet = DataPacket.from_dict(raw)
+    print(packet.sample_rate, packet.samples_lost, packet.channels)
+    qw = packet.channel(BioChannel.QW)
+    imu = packet.as_array()            # (n_channels, n_samples) float array
+    if packet.is_type(PacketType.IMU) and packet.is_ok:
+        ...
+```
+
+`sample_rate` is `None` rather than `0.0` until the rate has been measured, and unmodelled fields stay reachable on `packet.raw`.
+
+The `PacketType`, `PacketStatus`, `DeviceType` and `BioChannel` enums mirror the schemas `sifibridge schema` exports, and a test in Tier 2 re-exports them from the pinned binary and fails if the two ever disagree — so a value added or renamed in the bridge surfaces in CI rather than as an unfamiliar string in your data.
 
 ## Timestamps
 

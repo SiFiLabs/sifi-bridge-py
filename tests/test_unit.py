@@ -19,6 +19,7 @@ real binary for that.
 import unittest
 
 from sifi_bridge_py import utils
+from sifi_bridge_py.packets import BioChannel, DataPacket, PacketType
 from sifi_bridge_py.sifi_bridge import (
     SifiBridge,
     SifiBridgeError,
@@ -729,6 +730,149 @@ class TestBufferCommands(unittest.TestCase):
         sb.download_memory_serial("COM3", "/tmp/o")
         self.assertEqual(req.calls[0], "download-memory --serial COM3")
         self.assertIn("buffer export", req.calls[-1])
+
+
+class TestPpgFsHelper(unittest.TestCase):
+    """`configure_ppg_fs` solves fs = sps / avg over the hardware's choices."""
+
+    def test_prefers_the_most_averaging(self):
+        # 100 Hz is reachable as 100/1, 200/2, 400/4 and 800/8; the last gives
+        # eight raw samples per delivered one, so it wins by default.
+        sb, req = make_sb()
+        sb.configure_ppg_fs(100)
+        self.assertEqual(tok(req.last), tok("configure ppg --sps 800 --avg 8"))
+
+    def test_explicit_avg_is_honoured(self):
+        sb, req = make_sb()
+        sb.configure_ppg_fs(100, avg=1)
+        self.assertEqual(tok(req.last), tok("configure ppg --sps 100 --avg 1"))
+
+    def test_passes_through_the_other_settings(self):
+        sb, req = make_sb()
+        sb.configure_ppg_fs(50, ir=5, sens="high")
+        self.assertIn("--sps 800", req.last)
+        self.assertIn("--avg 16", req.last)
+        self.assertIn("--led-ir 5", req.last)
+        self.assertIn("--sens high", req.last)
+
+    def test_every_reachable_rate_solves(self):
+        sb, req = make_sb()
+        for fs in SifiBridge._reachable_ppg_rates():
+            with self.subTest(fs=fs):
+                sps, avg = SifiBridge._solve_ppg_rate(fs, None)
+                self.assertEqual(sps / avg, fs)
+                self.assertIn(sps, SifiBridge._PPG_SPS_CHOICES)
+                self.assertIn(avg, SifiBridge._PPG_AVG_CHOICES)
+
+    def test_unreachable_rate_lists_the_alternatives(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError) as ctx:
+            sb.configure_ppg_fs(7)
+        self.assertIn("25", str(ctx.exception))
+
+    def test_rate_above_the_cap_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError) as ctx:
+            sb.configure_ppg_fs(400)
+        self.assertIn("200", str(ctx.exception))
+
+    def test_impossible_avg_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.configure_ppg_fs(100, avg=3)  # would need sps=300
+
+    def test_non_positive_rate_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.configure_ppg_fs(0)
+
+
+class TestDataPacket(unittest.TestCase):
+    """The opt-in typed view over a packet dict."""
+
+    PACKET = {
+        "device": "BioPoint",
+        "id": "BP_EF05",
+        "name": "my_biopoint",
+        "mac": "FA:31:9F:7E:6A:A9",
+        "packet_type": "imu",
+        "status": "ok",
+        "received_at": 1789285349.65,
+        "sample_rate": 99.8,
+        "samples_lost": 2,
+        "timestamps": [0.0, 0.01, 0.02],
+        "data": {
+            "qw": [0.54, 0.55, 0.56],
+            "ax": [0.1, 0.2, 0.3],
+        },
+    }
+
+    def test_fields(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertEqual(packet.packet_type, "imu")
+        self.assertEqual(packet.device, "BioPoint")
+        self.assertEqual(packet.id, "BP_EF05")
+        self.assertEqual(packet.name, "my_biopoint")
+        self.assertEqual(packet.sample_rate, 99.8)
+        self.assertEqual(packet.samples_lost, 2)
+        self.assertEqual(packet.timestamps, (0.0, 0.01, 0.02))
+        self.assertTrue(packet.is_ok)
+        self.assertTrue(packet.is_type(PacketType.IMU))
+        self.assertTrue(packet.is_type("imu"))
+        self.assertFalse(packet.is_type(PacketType.ECG))
+
+    def test_channels(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertEqual(packet.channels, ("qw", "ax"))
+        self.assertEqual(packet.channel(BioChannel.QW), [0.54, 0.55, 0.56])
+        self.assertEqual(packet.channel("ax"), [0.1, 0.2, 0.3])
+        self.assertIsNone(packet.get(BioChannel.ECG))
+        self.assertEqual(packet.get(BioChannel.ECG, []), [])
+
+    def test_missing_channel_names_what_is_there(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        with self.assertRaises(KeyError) as ctx:
+            packet.channel(BioChannel.ECG)
+        self.assertIn("ax", str(ctx.exception))
+
+    def test_as_array(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertEqual(packet.as_array().shape, (2, 3))
+        self.assertEqual(packet.as_array([BioChannel.AX]).shape, (1, 3))
+
+    def test_absolute_timestamps(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        absolute = packet.absolute_timestamps(1000.0)
+        self.assertEqual([round(t, 3) for t in absolute], [1000.0, 1000.01, 1000.02])
+
+    def test_absent_fields_are_none_not_zero(self):
+        # sample_rate takes two samples to measure and is omitted until then;
+        # reporting it as 0.0 would invite a division by zero.
+        packet = DataPacket.from_dict(
+            {"packet_type": "ecg", "status": "ok", "data": {"ecg": [1.0]}}
+        )
+        self.assertIsNone(packet.sample_rate)
+        self.assertIsNone(packet.start_time)
+        self.assertEqual(packet.samples_lost, 0)
+        self.assertEqual(packet.timestamps, ())
+
+    def test_raw_is_preserved(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertIs(packet.raw, self.PACKET)
+
+    def test_empty_packet_rejected(self):
+        # The getters return {} on timeout, which is not a packet.
+        with self.assertRaises(ValueError):
+            DataPacket.from_dict({})
+
+    def test_unknown_packet_type_does_not_raise(self):
+        # The schema allows values outside the known set, so a newer bridge
+        # must not break an older wrapper.
+        packet = DataPacket.from_dict(
+            {"packet_type": "something_new", "status": "ok", "data": {}}
+        )
+        self.assertEqual(packet.packet_type, "something_new")
+        self.assertFalse(packet.is_type(PacketType.ECG))
 
 
 class TestUtils(unittest.TestCase):

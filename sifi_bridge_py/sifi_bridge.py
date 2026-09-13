@@ -11,99 +11,18 @@ import queue
 
 import logging
 
+# Re-exported: these used to live here, and `from sifi_bridge_py.sifi_bridge
+# import PacketType` must keep working.
+from .packets import (  # noqa: F401
+    BioChannel,
+    DataPacket,
+    DeviceType,
+    PacketStatus,
+    PacketType,
+    SensorChannel,
+)
+
 logger = logging.getLogger(__name__)
-
-
-class PacketType(Enum):
-    """
-    Data packet types that can be received from SiFi Bridge.
-
-    # Example
-
-    ```python
-    >>> sb = SifiBridge()
-    >>> sb.connect()
-    >>> sb.start()
-    >>> packet = sb.get_ecg()
-    >>> print(packet["packet_type"] == PacketType.ECG.value)
-    True
-    ```
-    """
-
-    ECG = "ecg"
-    EMG = "emg"
-    EMG_ARMBAND = "emg_armband"
-    EDA = "eda"
-    IMU = "imu"
-    PPG = "ppg"
-    TEMPERATURE = "temperature"
-    MEMORY = "memory"
-    STATUS = "status"
-    START_TIME = "start_time"
-    EVENT = "event"
-    INVALID = "invalid"
-
-
-class PacketStatus(Enum):
-    """
-    Data packet statuses.
-
-    # Example
-
-    ```python
-    >>> sb = SifiBridge()
-    >>> sb.connect()
-    >>> sb.start()
-    >>> packet = sb.get_ecg()
-    >>> print(packet["status"] == PacketStatus.OK.value)
-    True
-    ```
-    """
-
-    OK = "ok"
-    RECORDING = "recording"
-    MEMORY_DOWNLOAD_COMPLETED = "memory_download_completed"
-    MEMORY_ERASED = "memory_erased"
-    INVALID_DATETIME = "invalid_datetime"
-    INVALID = "invalid"
-
-
-class SensorChannel(Enum):
-    """
-    Sensor channel names as returned by `sifibridge`.
-
-    # Example
-
-    ```python
-    >>> sb = SifiBridge()
-    >>> sb.connect()
-    >>> sb.start()
-    >>> packet = sb.get_imu()
-    >>> imu = packet["data"]
-    >>> print(len(imu) == len(SensorChannel.IMU.value)) # 7 IMU channels
-    True
-    >>> qw = imu[SensorChannel.IMU.value[0]] # get first channel
-    >>> print(len(qw), qw)
-    8 [0.5427, 0.5423, 0.5426, 0.5424, 0.5424, 0.5428, 0.5424, 0.5422]
-    ```
-    """
-
-    ECG = "ecg"
-    """ECG sensor channel."""
-    EMG = "emg"
-    """EMG sensor channel."""
-    EMG_ARMBAND = ("emg0", "emg1", "emg2", "emg3", "emg4", "emg5", "emg6", "emg7")
-    """SiFiBand 8-channel EMG sensor channels."""
-    EDA = "eda"
-    """EDA/BIOZ sensor channel."""
-    IMU = ("qw", "qx", "qy", "qz", "ax", "ay", "az")
-    """IMU sensor channels."""
-    PPG = ("ir", "r", "g", "b")
-    """PPG sensor channels."""
-    TEMPERATURE = "temperature"
-    """Temperature sensor channel."""
-    EVENT = "event"
-    """Event data key"""
 
 
 class SifiBridgeError(RuntimeError):
@@ -128,32 +47,6 @@ class SifiBridgeTimeout(SifiBridgeError):
     callers that want to distinguish "operation in progress / no device matched"
     from a protocol-level error can catch `SifiBridgeTimeout` specifically.
     """
-
-
-class DeviceType(Enum):
-    """
-    Device types reported in the `device` field of responses and packets.
-
-    sifibridge 2.0.0 collapsed the per-revision BioPoint types into a single
-    `BioPoint`; the hardware and firmware revisions are reported separately as
-    `hardware_version` / `firmware_version` in `SifiBridge.info()`. The
-    `BIOPOINT_V1_*` members are kept so code reading data recorded with
-    sifibridge 1.x still resolves, but 2.0.0 never emits them.
-
-    Passing one of these to `SifiBridge.connect()` still works as a BLE-name
-    handle, but custom names (see `SifiBridge.rename_device()`) are preferred.
-    """
-
-    BIOPOINT = "BioPoint"
-    SIFIBAND = "SiFiBand"
-    SIFIBAND_FOCUS = "SiFiBandFocus"
-
-    BIOPOINT_V1_1 = "BioPoint_v1_1"
-    """DEPRECATED: emitted by sifibridge 1.x only."""
-    BIOPOINT_V1_2 = "BioPoint_v1_2"
-    """DEPRECATED: emitted by sifibridge 1.x only."""
-    BIOPOINT_V1_3 = "BioPoint_v1_3"
-    """DEPRECATED: emitted by sifibridge 1.x only."""
 
 
 class BleTxPower(Enum):
@@ -531,6 +424,12 @@ class SifiBridge:
     # ------------------------------------------------------------------
     # Command-building helpers
     # ------------------------------------------------------------------
+
+    _PPG_SPS_CHOICES: tuple = (50, 100, 200, 400, 800)
+    """Raw AFE sample rates the PPG front end accepts."""
+
+    _PPG_AVG_CHOICES: tuple = (1, 2, 4, 8, 16, 32)
+    """Averaging factors the PPG front end accepts."""
 
     _PPG_MAX_EFFECTIVE_RATE_HZ: float = 200.0
     """Cap the wrapper enforces on the PPG effective output rate (``sps / avg``).
@@ -932,6 +831,116 @@ class SifiBridge:
             self._flag("avg", avg),
         )
         return self._configure(tail, all, devices)
+
+    def configure_ppg_fs(
+        self,
+        fs: int,
+        avg: int | None = None,
+        ir: int | None = None,
+        red: int | None = None,
+        green: int | None = None,
+        blue: int | None = None,
+        sens: PpgSensitivity | str | None = None,
+        all: bool = False,
+        devices: str | Sequence[str] | None = None,
+    ):
+        """Configure PPG by the output rate you want, rather than by `sps`.
+
+        The PPG front end has no sampling-rate control as such: it samples at
+        `sps` and averages `avg` of those into each delivered sample, so the
+        rate that reaches you is ``sps / avg``. This works out a pair that
+        delivers `fs` and hands it to `configure_ppg`.
+
+        By default it picks the pair with the **most averaging** — the highest
+        `sps` that still divides down to `fs` — since averaging is the reason
+        the two are separate: more raw samples per delivered one means a
+        cleaner signal, at the cost of running the LEDs harder. Pass `avg`
+        explicitly to choose the trade-off yourself.
+
+        :param fs: Wanted output rate in Hz, up to 200.
+        :param avg: Averaging factor to use. Defaults to the largest that can
+            deliver `fs`.
+        :param ir: IR LED current in mA (0-50).
+        :param red: Red LED current in mA (0-50).
+        :param green: Green LED current in mA (0-50).
+        :param blue: Blue LED current in mA (0-50).
+        :param sens: Sensor sensitivity. One of low, medium, high, max.
+        :param all: Apply to every managed device.
+        :param devices: Device handle, or sequence of handles, to apply to.
+
+        :raises ValueError: If no ``sps``/``avg`` pair delivers `fs`, or if
+            `fs` exceeds the 200 Hz cap. The message lists the rates that are
+            reachable.
+
+        # Example
+
+        ```python
+        >>> sb.configure_ppg_fs(100)           # sps=800, avg=8
+        >>> sb.configure_ppg_fs(100, avg=1)    # sps=100, avg=1
+        ```
+        """
+        sps, avg = self._solve_ppg_rate(fs, avg)
+        return self.configure_ppg(
+            sps=sps,
+            ir=ir,
+            red=red,
+            green=green,
+            blue=blue,
+            sens=sens,
+            avg=avg,
+            all=all,
+            devices=devices,
+        )
+
+    @classmethod
+    def _solve_ppg_rate(cls, fs: int, avg: int | None) -> tuple:
+        """Find an ``(sps, avg)`` pair whose quotient is `fs`.
+
+        Prefers the largest `avg` — equivalently the highest `sps` — because
+        that is the smoothest way to deliver a given rate. See
+        `configure_ppg_fs`.
+        """
+        if fs <= 0:
+            raise ValueError(f"fs must be positive, got {fs}")
+        if fs > cls._PPG_MAX_EFFECTIVE_RATE_HZ:
+            raise ValueError(
+                f"fs={fs} Hz exceeds the {cls._PPG_MAX_EFFECTIVE_RATE_HZ:g} Hz "
+                f"cap; reachable rates are {cls._reachable_ppg_rates()}"
+            )
+
+        candidates = [
+            (sps, a)
+            for a in cls._PPG_AVG_CHOICES
+            for sps in cls._PPG_SPS_CHOICES
+            if sps == fs * a
+        ]
+        if avg is not None:
+            candidates = [pair for pair in candidates if pair[1] == avg]
+            if not candidates:
+                raise ValueError(
+                    f"No PPG configuration delivers fs={fs} Hz with avg={avg}: "
+                    f"that needs sps={fs * avg}, and the front end offers "
+                    f"{list(cls._PPG_SPS_CHOICES)}"
+                )
+        if not candidates:
+            raise ValueError(
+                f"No PPG configuration delivers fs={fs} Hz; reachable rates "
+                f"are {cls._reachable_ppg_rates()}"
+            )
+        # Highest sps, which is also the largest avg for this fs.
+        return max(candidates)
+
+    @classmethod
+    def _reachable_ppg_rates(cls) -> list:
+        """Every output rate the front end can deliver, within the cap."""
+        return sorted(
+            {
+                sps // avg
+                for sps in cls._PPG_SPS_CHOICES
+                for avg in cls._PPG_AVG_CHOICES
+                if sps % avg == 0 and sps / avg <= cls._PPG_MAX_EFFECTIVE_RATE_HZ
+            }
+        )
 
     def configure_imu(
         self,

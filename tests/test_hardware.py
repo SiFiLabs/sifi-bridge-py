@@ -34,8 +34,11 @@ import time
 import tempfile
 import unittest
 
+import dataclasses
+
 import sifi_bridge_py as sbp
 from sifi_bridge_py import utils
+from sifi_bridge_py.packets import BioChannel, DataPacket
 from sifi_bridge_py.sifi_bridge import (
     PacketType,
     SensorChannel,
@@ -183,6 +186,48 @@ class TestHardwareAcquisition(unittest.TestCase):
             {s: v for s, v in before.items() if s != "emg"},
             "enabling EMG also changed another sensor's state",
         )
+
+    def test_data_packet_wraps_a_real_packet(self):
+        """`DataPacket` must model what the device actually sends."""
+        self.sb.configure_sensors(ecg=True)
+        self.sb.configure_ecg(fs=500)
+        raw = self._collect(self.sb.get_ecg, 8.0)
+        packet = DataPacket.from_dict(raw)
+
+        self.assertTrue(packet.is_type(PacketType.ECG))
+        self.assertTrue(packet.is_ok, f"status was {packet.status!r}")
+        self.assertEqual(packet.device, raw["device"])
+        self.assertEqual(packet.id, raw["id"])
+        self.assertGreater(packet.received_at, 0)
+        self.assertIn(BioChannel.ECG.value, packet.channels)
+
+        samples = packet.channel(BioChannel.ECG)
+        self.assertTrue(samples)
+        self.assertEqual(
+            packet.as_array([BioChannel.ECG]).shape, (1, len(samples))
+        )
+        self.assertEqual(len(packet.timestamps), len(samples))
+
+        # Anything the dataclass does not model must still be reachable.
+        self.assertIs(packet.raw, raw)
+        unmodelled = set(raw) - {f.name for f in dataclasses.fields(DataPacket)}
+        self.assertEqual(
+            unmodelled,
+            set(),
+            f"packet carries unmodelled fields: {sorted(unmodelled)}",
+        )
+
+    def test_configure_ppg_fs_delivers_the_requested_rate(self):
+        """The solved sps/avg pair must land on the device as computed."""
+        self.sb.configure_ppg_fs(100)
+        config = self.sb.get_configuration().get("ppg", {})
+        self.assertEqual(config.get("sps"), 800)
+        self.assertEqual(config.get("avg"), 8)
+
+        self.sb.configure_ppg_fs(100, avg=1)
+        config = self.sb.get_configuration().get("ppg", {})
+        self.assertEqual(config.get("sps"), 100)
+        self.assertEqual(config.get("avg"), 1)
 
     def test_timestamps_are_relative_to_start_time(self):
         """Sample timestamps are acquisition-relative; `start_time` anchors them.

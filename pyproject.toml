@@ -4,7 +4,11 @@ name = "sifi-bridge-py"
 version = "2.0.0"
 description = "Python bindings for the SiFi Bridge tool."
 authors = [{ name = "SiFi Labs", email = "gabrielg@sifilabs.com" }]
-dependencies = ["numpy", "sifibridge-bin>=2.0.0,<3.0.0"]
+# `sifibridge-bin` bundles the CLI, and its version is the CLI's. The
+# wrapper is tested against one release, so allow only patch-level CLI
+# fixes to flow through: a new minor can rename flags, which the wrapper
+# would not survive (2.0.0 removed `configure imu --gyro-range`).
+dependencies = ["numpy", "sifibridge-bin~=2.0.0"]
 requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "MIT" }

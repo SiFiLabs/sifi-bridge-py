@@ -15,6 +15,11 @@ Tests that need a connected device live in ``test_hardware.py`` (gated on the
 ``SIFI_HW`` env var) and are not run here.
 """
 
+import dataclasses
+import json
+import pathlib
+import subprocess
+import tempfile
 import unittest
 
 import sifi_bridge_py as sbp
@@ -155,6 +160,8 @@ COMMAND_MATRIX = [
     ("configure_ppg", (), {"sps": 400, "avg": 2}),
     ("configure_ppg", (), {"ir": 9, "red": 9, "green": 9, "blue": 9}),
     ("configure_ppg", (), {"sens": PpgSensitivity.MAX}),
+    ("configure_ppg_fs", (100,), {}),
+    ("configure_ppg_fs", (25,), {"avg": 32}),
     ("configure_imu", (), {"fs": 100, "accel_range": 16}),
     ("configure_imu", (), {"accel_range": 8}),
     ("configure_temperature", (), {"fs": 1.0}),
@@ -305,6 +312,141 @@ class TestGeneratedCommandsParse(unittest.TestCase):
         }
         missing = public - covered - exempt
         self.assertEqual(missing, set(), f"not covered by the parse check: {missing}")
+
+
+class TestSchemasMatchTheBinary(unittest.TestCase):
+    """The enums must cover everything the binary says it can send.
+
+    `sifibridge schema` exports the JSON schema for the packet types, statuses,
+    device types and channel names. Comparing our enums against that export is
+    the data-direction counterpart of the command-line parse check: a value
+    added or renamed in the bridge shows up here instead of as a surprise
+    string in a user's packet.
+
+    Extras on our side are allowed — sifibridge 1.x device types are kept so
+    old recordings still resolve — but anything the binary can emit must have
+    a member.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from sifibridge_bin import get_executable
+
+            exe = get_executable()
+        except Exception as e:  # binary missing / wrong platform
+            raise unittest.SkipTest(f"sifibridge binary unavailable: {e}")
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        result = subprocess.run(
+            [exe, "schema", "-o", cls._tmp.name],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            cls._tmp.cleanup()
+            raise unittest.SkipTest(
+                f"`sifibridge schema` failed ({result.returncode}): "
+                f"{result.stderr.decode(errors='replace')[:300]}"
+            )
+        cls.schema_dir = pathlib.Path(cls._tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        tmp = getattr(cls, "_tmp", None)
+        if tmp is not None:
+            tmp.cleanup()
+
+    def _schema_values(self, name: str) -> set:
+        """Every string the named schema allows, from its enum branches.
+
+        The schemas wrap their enum in `anyOf`/`oneOf` alongside an open
+        `{"type": "string"}` branch for forward compatibility, so collect the
+        `enum` and `const` entries wherever they appear.
+        """
+        path = self.schema_dir / f"{name}.schema.json"
+        self.assertTrue(path.is_file(), f"{path.name} was not exported")
+        schema = json.loads(path.read_text(encoding="utf-8"))
+
+        values = set()
+
+        def walk(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("enum"), list):
+                    values.update(v for v in node["enum"] if isinstance(v, str))
+                if isinstance(node.get("const"), str):
+                    values.add(node["const"])
+                for child in node.values():
+                    walk(child)
+            elif isinstance(node, list):
+                for child in node:
+                    walk(child)
+
+        walk(schema)
+        self.assertTrue(values, f"no enum values found in {path.name}")
+        return values
+
+    def _assert_covers(self, enum_cls, schema_name: str, allowed_extras=frozenset()):
+        schema_values = self._schema_values(schema_name)
+        ours = {member.value for member in enum_cls}
+        missing = schema_values - ours
+        self.assertEqual(
+            missing,
+            set(),
+            f"{enum_cls.__name__} has no member for {sorted(missing)}, which "
+            f"the binary's {schema_name} schema says it can emit",
+        )
+        unexpected = ours - schema_values - set(allowed_extras)
+        self.assertEqual(
+            unexpected,
+            set(),
+            f"{enum_cls.__name__} has {sorted(unexpected)}, which the binary's "
+            f"{schema_name} schema does not list",
+        )
+
+    def test_packet_type(self):
+        self._assert_covers(sbp.PacketType, "PacketType")
+
+    def test_packet_status(self):
+        self._assert_covers(sbp.PacketStatus, "PacketStatus")
+
+    def test_bio_channel(self):
+        self._assert_covers(sbp.BioChannel, "BioChannel")
+
+    def test_device_type(self):
+        # The per-revision BioPoint names are sifibridge 1.x only; kept so data
+        # recorded with 1.x still resolves.
+        self._assert_covers(
+            sbp.DeviceType,
+            "DeviceType",
+            allowed_extras={"BioPoint_v1_1", "BioPoint_v1_2", "BioPoint_v1_3"},
+        )
+
+    def test_sensor_channel_names_are_bio_channels(self):
+        """Every name in the per-sensor grouping must be a real channel."""
+        known = {member.value for member in sbp.BioChannel}
+        for sensor in sbp.SensorChannel:
+            names = (
+                (sensor.value,) if isinstance(sensor.value, str) else sensor.value
+            )
+            for name in names:
+                with self.subTest(sensor=sensor.name, channel=name):
+                    self.assertIn(name, known)
+
+    def test_data_packet_fields_are_modelled(self):
+        """`DataPacket` must have an attribute for every schema property."""
+        schema = json.loads(
+            (self.schema_dir / "DataPacket.schema.json").read_text(encoding="utf-8")
+        )
+        properties = set(schema.get("properties", {}))
+        modelled = {f.name for f in dataclasses.fields(sbp.DataPacket)}
+        missing = properties - modelled
+        self.assertEqual(
+            missing,
+            set(),
+            f"DataPacket does not model {sorted(missing)}; the fields are "
+            "still reachable through .raw, but should be named",
+        )
 
 
 if __name__ == "__main__":
