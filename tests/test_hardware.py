@@ -35,6 +35,7 @@ import tempfile
 import unittest
 
 import sifi_bridge_py as sbp
+from sifi_bridge_py import utils
 from sifi_bridge_py.sifi_bridge import (
     PacketType,
     SensorChannel,
@@ -119,6 +120,19 @@ class TestHardwareAcquisition(unittest.TestCase):
 
     # -- helpers ------------------------------------------------------
 
+    def _only(self, **sensors):
+        """Enable exactly the named sensors and disable the rest.
+
+        Necessary because `configure_sensors` is incremental: an omitted sensor
+        keeps its current state, so a test that only says ``ecg=True`` inherits
+        whatever the previous test left on. With every sensor streaming at once
+        the BLE link saturates and the sensor under test can go quiet, which
+        looks exactly like absent hardware.
+        """
+        states = {s: False for s in ("ecg", "emg", "eda", "imu", "ppg")}
+        states.update(sensors)
+        return self.sb.configure_sensors(**states)
+
     def _collect(self, getter, timeout: float) -> dict:
         """Start, wait for one packet from ``getter``, then stop.
 
@@ -142,17 +156,89 @@ class TestHardwareAcquisition(unittest.TestCase):
         self.assertIn("id", info)
         self.assertEqual(self.sb.get_active_device(), info["id"])
 
+    def test_info_accessors_are_populated(self):
+        """The accessors must actually find their fields on a real device.
+
+        They read out of the `configuration` block; reading them from the top
+        level of `info()` returns empty without raising, which is how the first
+        version of these accessors shipped looking fine.
+        """
+        self.assertTrue(self.sb.get_configuration())
+        self.assertTrue(self.sb.get_sensors(), "sensor inventory came back empty")
+        self.assertIsNotNone(self.sb.get_device_state())
+        self.assertIsInstance(self.sb.get_battery(), int)
+
+    def test_sensor_states_follow_configure_sensors(self):
+        """Enabling one sensor must leave the others exactly as they were."""
+        self.sb.configure_sensors(ecg=True, emg=False, eda=False, imu=False, ppg=False)
+        before = self.sb.get_sensor_states()
+        self.assertEqual(before.get("ecg"), True)
+        self.assertEqual(before.get("emg"), False)
+
+        self.sb.configure_sensors(emg=True)
+        after = self.sb.get_sensor_states()
+        self.assertEqual(after.get("emg"), True, "configure_sensors(emg=True) no-op")
+        self.assertEqual(
+            {s: v for s, v in after.items() if s != "emg"},
+            {s: v for s, v in before.items() if s != "emg"},
+            "enabling EMG also changed another sensor's state",
+        )
+
+    def test_timestamps_are_relative_to_start_time(self):
+        """Sample timestamps are acquisition-relative; `start_time` anchors them.
+
+        This is what `utils.absolute_timestamps` assumes, and the 2.0.0
+        changelog describes it both ways in different entries.
+        """
+        self.sb.configure_sensors(ecg=True, emg=False, eda=False, imu=False, ppg=False)
+        self.sb.configure_ecg(fs=500)
+        self.sb.clear_data_buffer()
+        self.assertTrue(self.sb.start())
+        start_time, first_ecg = None, None
+        deadline = time.monotonic() + 10.0
+        try:
+            while time.monotonic() < deadline and (start_time is None or not first_ecg):
+                packet = self.sb.get_data(timeout=1.0)
+                if not packet:
+                    continue
+                if packet.get("packet_type") == PacketType.START_TIME.value:
+                    start_time = utils.get_start_time(packet)
+                elif packet.get("packet_type") == PacketType.ECG.value and not first_ecg:
+                    first_ecg = packet
+        finally:
+            self.sb.stop()
+
+        if start_time is None or not first_ecg:
+            self.skipTest("did not observe both a start_time and an ECG packet")
+
+        timestamps = first_ecg["timestamps"]
+        # Relative: the first sample of an acquisition sits at ~0, not at a
+        # Unix epoch value (which would be ~1.7e9).
+        self.assertLess(
+            timestamps[0], 60.0, f"timestamps look absolute, not relative: {timestamps[:3]}"
+        )
+        self.assertTrue(
+            all(b > a for a, b in zip(timestamps, timestamps[1:])),
+            "timestamps are not monotonically increasing",
+        )
+
+        absolute = utils.absolute_timestamps(first_ecg, start_time)
+        self.assertEqual(len(absolute), len(timestamps))
+        # Anchored to the acquisition, which just happened.
+        self.assertAlmostEqual(absolute[0], start_time + timestamps[0], places=6)
+        self.assertLess(abs(absolute[0] - time.time()), 300.0)
+
     # -- per-sensor acquisition ---------------------------------------
 
     def test_ecg_acquisition(self):
-        self.sb.configure_sensors(ecg=True)
+        self._only(ecg=True)
         self.sb.configure_ecg(fs=500)
         packet = self._collect(self.sb.get_ecg, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.ECG.value)
         self.assertIn(SensorChannel.ECG.value, packet["data"])
 
     def test_emg_acquisition(self):
-        self.sb.configure_sensors(emg=True)
+        self._only(emg=True)
         self.sb.configure_emg(fs=2000)
         packet = self._collect(self.sb.get_emg, 8.0)
         # BioPoint reports `emg`, SiFiBand reports `emg_armband`.
@@ -163,14 +249,14 @@ class TestHardwareAcquisition(unittest.TestCase):
         self.assertTrue(packet["data"])
 
     def test_eda_acquisition(self):
-        self.sb.configure_sensors(eda=True)
+        self._only(eda=True)
         self.sb.configure_eda(fs=50)
         packet = self._collect(self.sb.get_eda, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.EDA.value)
         self.assertIn(SensorChannel.EDA.value, packet["data"])
 
     def test_imu_acquisition(self):
-        self.sb.configure_sensors(imu=True)
+        self._only(imu=True)
         self.sb.configure_imu(fs=100)
         packet = self._collect(self.sb.get_imu, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.IMU.value)
@@ -178,7 +264,7 @@ class TestHardwareAcquisition(unittest.TestCase):
             self.assertIn(channel, packet["data"])
 
     def test_ppg_acquisition(self):
-        self.sb.configure_sensors(ppg=True)
+        self._only(ppg=True)
         self.sb.configure_ppg(sps=100, avg=1)
         packet = self._collect(self.sb.get_ppg, 8.0)
         self.assertEqual(packet["packet_type"], PacketType.PPG.value)
@@ -187,11 +273,11 @@ class TestHardwareAcquisition(unittest.TestCase):
         )
 
     def test_temperature_acquisition(self):
-        # Every parameter is optional now, so "disable the others" has to
-        # be said explicitly: an omitted sensor keeps its current state.
-        self.sb.configure_sensors(
-            ecg=False, emg=False, eda=False, imu=False, ppg=False
-        )
+        # Temperature is not part of `configure sensors` and has no enable of
+        # its own, but the device only emits it alongside an otherwise active
+        # acquisition: with all five biosensors off, nothing arrives. So pair
+        # it with ECG rather than running it alone.
+        self._only(ecg=True)
         self.sb.configure_temperature(fs=1.0)
         # Temperature streams at ~1 Hz, so allow extra time for the first packet.
         packet = self._collect(self.sb.get_temperature, 15.0)
@@ -199,7 +285,7 @@ class TestHardwareAcquisition(unittest.TestCase):
         self.assertIn(SensorChannel.TEMPERATURE.value, packet["data"])
 
     def test_multi_sensor_acquisition(self):
-        self.sb.configure_sensors(ecg=True, imu=True)
+        self._only(ecg=True, imu=True)
         self.sb.configure_ecg(fs=500)
         self.sb.configure_imu(fs=100)
         self.sb.clear_data_buffer()
@@ -217,7 +303,7 @@ class TestHardwareAcquisition(unittest.TestCase):
     # -- events & status ----------------------------------------------
 
     def test_event_appears_in_stream(self):
-        self.sb.configure_sensors(ecg=True)
+        self._only(ecg=True)
         self.sb.configure_ecg(fs=500)
         self.sb.clear_data_buffer()
         self.assertTrue(self.sb.start())
@@ -251,7 +337,7 @@ class TestHardwareAcquisition(unittest.TestCase):
     # -- buffer subsystem, end to end ---------------------------------
 
     def test_buffer_end_to_end(self):
-        self.sb.configure_sensors(ecg=True)
+        self._only(ecg=True)
         self.sb.configure_ecg(fs=500)
         self.sb.buffer_clear(all=True)
 

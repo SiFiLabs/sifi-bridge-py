@@ -376,16 +376,53 @@ class SifiBridge:
         """
         return self.info()["id"]
 
+    def get_configuration(self) -> dict:
+        """
+        The active device's current configuration.
+
+        Useful to confirm what a partial `configure_*` call left untouched:
+        every configuration parameter defaults to None, meaning "leave as-is".
+
+        Note that sifibridge nests almost everything it reports about a device
+        in here — the sensor inventory, per-sensor settings, battery level and
+        working state included. `info()` itself carries only `id`, `name`,
+        `device`, `connected` and this block.
+
+        :return: The ``configuration`` block of `info()`.
+        :raises SifiBridgeError: If no device is currently active.
+        """
+        return self.info().get("configuration", {})
+
     def get_sensors(self) -> dict:
         """
         Which sensors the connected device physically has.
 
-        :return: A mapping like ``{"ecg": False, "emg": True, ...}``. Empty if
-            the device's firmware predates sifibridge 2.0.0 and does not report
-            the field.
+        This is the hardware inventory, not what is currently streaming: a
+        sensor reads True here whether or not `configure_sensors` has it
+        enabled. Use `get_sensor_states()` for the enabled/disabled picture.
+
+        :return: A mapping like ``{"ecg": True, "emg": True, ...}``. Empty if
+            the device's firmware does not report the field.
         :raises SifiBridgeError: If no device is currently active.
         """
-        return self.info().get("sensors", {})
+        return self.get_configuration().get("sensors", {})
+
+    def get_sensor_states(self) -> dict:
+        """
+        Which sensors are currently enabled for acquisition.
+
+        :return: A mapping like ``{"ecg": True, "emg": False, ...}``, covering
+            the sensors the device reports an ``enabled`` flag for. This is the
+            state `configure_sensors` manipulates.
+        :raises SifiBridgeError: If no device is currently active.
+        """
+        config = self.get_configuration()
+        states = {}
+        for sensor in ("ecg", "emg", "eda", "imu", "ppg"):
+            block = config.get(sensor)
+            if isinstance(block, dict) and "enabled" in block:
+                states[sensor] = block["enabled"]
+        return states
 
     def get_device_state(self) -> str | None:
         """
@@ -394,19 +431,16 @@ class SifiBridge:
         :return: The state string, or None if the device does not report one.
         :raises SifiBridgeError: If no device is currently active.
         """
-        return self.info().get("device_state")
+        return self.get_configuration().get("device_state")
 
-    def get_configuration(self) -> dict:
+    def get_battery(self) -> int | None:
         """
-        The active device's current configuration.
+        The device's battery charge, in percent.
 
-        Useful to confirm what a partial `configure_*` call left untouched:
-        every configuration parameter defaults to None, meaning "leave as-is".
-
-        :return: The ``configuration`` block of `info()`.
+        :return: The charge level, or None if the device does not report one.
         :raises SifiBridgeError: If no device is currently active.
         """
-        return self.info().get("configuration", {})
+        return self.get_configuration().get("battery_%")
 
     def select_device(self, name: str) -> str:
         """

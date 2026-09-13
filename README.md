@@ -33,9 +33,13 @@ with SifiBridge() as sb:
         packet = sb.get_emg(timeout=2.0)
         if not packet:
             continue   # timed out, no data this tick
-        print(packet["sample_rate"], packet["data"]["emg"][:4])
+        print(packet.get("sample_rate"), packet["data"]["emg"][:4])
     sb.stop()
 ```
+
+`sample_rate` is measured live and takes two samples to establish, so it is
+absent from the first packet of a stream rather than reported as zero — read it
+with `.get()`. `samples_lost` is likewise omitted on a healthy packet.
 
 `SifiBridge` is a context manager — leaving the `with` block closes the data socket and shuts down the subprocess. If you can't use `with`, call `sb.close()` explicitly when done.
 
@@ -87,8 +91,8 @@ When you target more than one device, sifibridge answers with an aggregated resp
 
 **Device information**
 
-- `sb.info()` returns everything sifibridge knows about the active device.
-- `sb.get_active_device()`, `sb.get_sensors()` (which sensors the hardware physically has), `sb.get_device_state()` and `sb.get_configuration()` are shortcuts into it.
+- `sb.info()` returns everything sifibridge knows about the active device. Almost all of it is nested under `configuration` — `info()` itself carries only `id`, `name`, `device` and `connected`.
+- `sb.get_configuration()` returns that block; `sb.get_active_device()`, `sb.get_sensors()` (the hardware inventory), `sb.get_sensor_states()` (what is currently enabled), `sb.get_device_state()` and `sb.get_battery()` are shortcuts into it.
 
 **Sensor configuration**
 
@@ -125,6 +129,25 @@ PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and 
 - `sb.dfu(package_path)` updates the device firmware over BLE.
 
 > **Paths and names cannot contain spaces.** The sifibridge REPL splits command lines on whitespace and does not support quoting, so `output_dir`, the DFU package path, and device names/handles must be space-free. The wrapper raises `ValueError` up front rather than sending something the CLI would mis-parse. Export to a path without spaces and move the files afterwards.
+
+## Timestamps
+
+Sample timestamps are **relative to the start of the acquisition**, in seconds — the first sample of a stream is at `0.0`. The acquisition's Unix epoch start arrives once, on the `start_time` packet:
+
+```python
+from sifi_bridge_py.utils import get_start_time, absolute_timestamps
+
+start = None
+while start is None:
+    packet = sb.get_data()
+    if packet.get("packet_type") == "start_time":
+        start = get_start_time(packet)
+
+emg = sb.get_emg()
+t = absolute_timestamps(emg, start)   # one Unix epoch timestamp per sample
+```
+
+Don't use a packet's `received_at` for this: that is when the host received the packet, including BLE transit and buffering, not a per-sample time.
 
 ## Error handling
 

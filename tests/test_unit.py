@@ -18,6 +18,7 @@ real binary for that.
 
 import unittest
 
+from sifi_bridge_py import utils
 from sifi_bridge_py.sifi_bridge import (
     SifiBridge,
     SifiBridgeError,
@@ -429,25 +430,49 @@ class TestSessionCommands(unittest.TestCase):
         self.assertEqual(sb.get_active_device(), "DEV1")
 
     def test_info_accessors(self):
-        sensors = {"ecg": False, "emg": True}
+        # sifibridge nests all of this inside `configuration`; reading it from
+        # the top level of info() silently yields nothing.
+        sensors = {"ecg": True, "emg": True, "imu": True}
+        configuration = {
+            "sensors": sensors,
+            "device_state": "idle",
+            "battery_%": 85,
+            "ecg": {"enabled": True, "fs": 500.0},
+            "emg": {"enabled": False, "fs": 2000.0},
+            "imu": {"enabled": True, "fs": 100.0},
+        }
+        sb, req = make_sb({"info": {"id": "DEV1", "configuration": configuration}})
+        self.assertEqual(sb.get_configuration(), configuration)
+        self.assertEqual(sb.get_sensors(), sensors)
+        self.assertEqual(sb.get_device_state(), "idle")
+        self.assertEqual(sb.get_battery(), 85)
+
+    def test_get_sensor_states_reports_enabled_flags(self):
+        # get_sensors() is the hardware inventory; get_sensor_states() is what
+        # configure_sensors() actually manipulates. They differ.
         sb, req = make_sb(
             {
                 "info": {
-                    "sensors": sensors,
-                    "device_state": "idle",
-                    "configuration": {"emg": {"fs": 2000}},
+                    "configuration": {
+                        "sensors": {"ecg": True, "emg": True, "ppg": True},
+                        "ecg": {"enabled": True},
+                        "emg": {"enabled": False},
+                        "ppg": {"enabled": False},
+                    }
                 }
             }
         )
-        self.assertEqual(sb.get_sensors(), sensors)
-        self.assertEqual(sb.get_device_state(), "idle")
-        self.assertEqual(sb.get_configuration(), {"emg": {"fs": 2000}})
+        self.assertEqual(
+            sb.get_sensor_states(), {"ecg": True, "emg": False, "ppg": False}
+        )
 
     def test_info_accessors_tolerate_missing_fields(self):
         sb, req = make_sb({"info": {"id": "DEV1"}})
-        self.assertEqual(sb.get_sensors(), {})
-        self.assertIsNone(sb.get_device_state())
         self.assertEqual(sb.get_configuration(), {})
+        self.assertEqual(sb.get_sensors(), {})
+        self.assertEqual(sb.get_sensor_states(), {})
+        self.assertIsNone(sb.get_device_state())
+        self.assertIsNone(sb.get_battery())
 
     def test_select_device(self):
         def resp(line):
@@ -657,6 +682,30 @@ class TestBufferCommands(unittest.TestCase):
         sb.download_memory_serial("COM3", "/tmp/o")
         self.assertEqual(req.calls[0], "download-memory --serial COM3")
         self.assertIn("buffer export", req.calls[-1])
+
+
+class TestUtils(unittest.TestCase):
+    def test_get_start_time(self):
+        packet = {"packet_type": "start_time", "start_time": 1789285349.0}
+        self.assertEqual(utils.get_start_time(packet), 1789285349.0)
+
+    def test_get_start_time_missing(self):
+        # A device whose clock came up wrong reports "invalid_datetime" and
+        # omits start_time; the acquisition still records.
+        packet = {"packet_type": "start_time", "status": "invalid_datetime"}
+        self.assertIsNone(utils.get_start_time(packet))
+
+    def test_absolute_timestamps(self):
+        # Sample timestamps are relative to the acquisition start, in seconds.
+        packet = {"timestamps": [0.0, 0.002, 0.004]}
+        result = utils.absolute_timestamps(packet, 1789285349.0)
+        self.assertEqual(
+            [round(t, 3) for t in result],
+            [1789285349.0, 1789285349.002, 1789285349.004],
+        )
+
+    def test_absolute_timestamps_without_timestamps(self):
+        self.assertEqual(len(utils.absolute_timestamps({}, 1789285349.0)), 0)
 
 
 if __name__ == "__main__":
