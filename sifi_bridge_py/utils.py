@@ -24,14 +24,11 @@ def get_start_time(packet: dict) -> float | None:
     Read the acquisition start time out of a Start Time packet.
 
     sifibridge emits one ``start_time`` packet at the beginning of every
-    acquisition. Its ``start_time`` field is the Unix epoch timestamp that the
-    per-sample ``timestamps`` on every later packet are measured from.
+    acquisition.
 
     :param packet: A packet whose ``packet_type`` is ``start_time``.
     :return: The acquisition start as a Unix epoch timestamp, or None if the
-        packet carries no usable one — which happens when the device's clock
-        came up wrong (``"status": "invalid_datetime"``); the acquisition still
-        records, but its samples cannot be placed on the wall clock.
+        packet does not contain the ``start_time`` value.
     """
     return packet.get("start_time")
 
@@ -41,12 +38,7 @@ def absolute_timestamps(packet: dict, start_time: float) -> np.ndarray:
     Convert a data packet's sample timestamps to Unix epoch time.
 
     Sample timestamps are **relative to the start of the acquisition**, in
-    seconds — the first sample of a stream is at ``0.0``. Adding the
-    acquisition's `get_start_time` puts them on the wall clock.
-
-    Do not use the packet's ``received_at`` for this: that is when the host
-    received the packet, which includes BLE transit and buffering, and is not a
-    per-sample time.
+    seconds.
 
     :param packet: Any data packet carrying a ``timestamps`` array.
     :param start_time: The acquisition start, from `get_start_time`.
