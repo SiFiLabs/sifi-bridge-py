@@ -337,8 +337,26 @@ class TestGeneratedCommandsParse(unittest.TestCase):
         self.assertEqual(missing, set(), f"not covered by the parse check: {missing}")
 
 
+# Schema values the wrapper deliberately does not carry a member for.
+#
+# The bridge can emit these, but they are internal or diagnostic and the enums
+# are kept to the surface a caller works with. They still arrive as plain
+# strings in the packet, so nothing is lost — `DataPacket.packet_type` and
+# `.status` are strings for exactly this reason, and unknown channel keys stay
+# readable through `DataPacket.data`.
+#
+# The point of listing them here rather than loosening the check is that a
+# value the bridge adds *later* still fails: this is an inventory of decisions,
+# not a mute button.
+SCHEMA_VALUES_NOT_MODELLED = {
+    "PacketType": {"low_latency", "start_packet", "device_info"},
+    "PacketStatus": {"bad_page_index", "bad_packet_length"},
+    "BioChannel": {"bad_page_index", "bad_page_total", "test_progress"},
+}
+
+
 class TestSchemasMatchTheBinary(unittest.TestCase):
-    """The enums must cover everything the binary says it can send.
+    """The enums must track what the binary says it can send.
 
     `sifibridge schema` exports the JSON schema for the packet types, statuses,
     device types and channel names. Comparing our enums against that export is
@@ -346,9 +364,10 @@ class TestSchemasMatchTheBinary(unittest.TestCase):
     added or renamed in the bridge shows up here instead of as a surprise
     string in a user's packet.
 
-    Extras on our side are allowed — sifibridge 1.x device types are kept so
-    old recordings still resolve — but anything the binary can emit must have
-    a member.
+    Two kinds of difference are allowed, both by explicit list: extras on our
+    side (sifibridge 1.x device types, kept so old recordings still resolve)
+    and values we deliberately do not model (`SCHEMA_VALUES_NOT_MODELLED`).
+    Anything else fails.
     """
 
     @classmethod
@@ -412,12 +431,26 @@ class TestSchemasMatchTheBinary(unittest.TestCase):
     def _assert_covers(self, enum_cls, schema_name: str, allowed_extras=frozenset()):
         schema_values = self._schema_values(schema_name)
         ours = {member.value for member in enum_cls}
-        missing = schema_values - ours
+        not_modelled = SCHEMA_VALUES_NOT_MODELLED.get(schema_name, set())
+
+        missing = schema_values - ours - not_modelled
         self.assertEqual(
             missing,
             set(),
             f"{enum_cls.__name__} has no member for {sorted(missing)}, which "
-            f"the binary's {schema_name} schema says it can emit",
+            f"the binary's {schema_name} schema says it can emit. Add the "
+            f"member, or list the value in SCHEMA_VALUES_NOT_MODELLED if "
+            f"leaving it out is deliberate",
+        )
+
+        # Keep that list honest: an entry the schema no longer mentions is
+        # stale, and hides the next real omission behind it.
+        stale = not_modelled - schema_values
+        self.assertEqual(
+            stale,
+            set(),
+            f"SCHEMA_VALUES_NOT_MODELLED[{schema_name!r}] lists {sorted(stale)}, "
+            f"which the schema no longer declares; drop the entry",
         )
         unexpected = ours - schema_values - set(allowed_extras)
         self.assertEqual(
