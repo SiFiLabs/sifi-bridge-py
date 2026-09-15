@@ -9,7 +9,10 @@ unwrapping end to end.
 
 The binary is resolved by ``sifibridge_bin.get_executable()`` — set
 ``SIFIBRIDGE_EXE`` to point at a dev build (e.g. ``./bin/sifibridge``). The
-whole module skips if no binary is available.
+whole module skips if no binary is available, unless ``SIFI_REQUIRE_BRIDGE``
+is set, which turns that skip into a failure. CI sets it: a Tier 2 job that
+skipped everything still reports OK, so without it a broken ``SIFIBRIDGE_EXE``
+looks exactly like a passing run.
 
 Tests that need a connected device live in ``test_hardware.py`` (gated on the
 ``SIFI_HW`` env var) and are not run here.
@@ -17,6 +20,7 @@ Tests that need a connected device live in ``test_hardware.py`` (gated on the
 
 import dataclasses
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -28,13 +32,32 @@ from sifi_bridge_py.sifi_bridge import PpgSensitivity, SifiBridgeError
 from .test_unit import make_sb
 
 
+def _no_bridge(reason: str):
+    """What to do when the sifibridge binary cannot be used.
+
+    Skipping is right locally — not every checkout has a binary — but in CI it
+    turns a Tier 2 job that tested nothing into a green one, which is how a
+    broken `SIFIBRIDGE_EXE` went unnoticed on the Windows runner. Set
+    ``SIFI_REQUIRE_BRIDGE=1`` where the binary is supposed to be present and
+    the same condition fails instead.
+
+    :raises RuntimeError: If ``SIFI_REQUIRE_BRIDGE`` is set.
+    :raises unittest.SkipTest: Otherwise.
+    """
+    if os.environ.get("SIFI_REQUIRE_BRIDGE"):
+        raise RuntimeError(
+            f"SIFI_REQUIRE_BRIDGE is set but the binary is unusable: {reason}"
+        )
+    raise unittest.SkipTest(reason)
+
+
 class TestIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
             cls.sb = sbp.SifiBridge()
         except Exception as e:  # binary missing / wrong platform
-            raise unittest.SkipTest(f"sifibridge binary unavailable: {e}")
+            _no_bridge(f"sifibridge binary unavailable: {e}")
 
     @classmethod
     def tearDownClass(cls):
@@ -247,7 +270,7 @@ class TestGeneratedCommandsParse(unittest.TestCase):
         try:
             cls.sb = sbp.SifiBridge()
         except Exception as e:  # binary missing / wrong platform
-            raise unittest.SkipTest(f"sifibridge binary unavailable: {e}")
+            _no_bridge(f"sifibridge binary unavailable: {e}")
 
     @classmethod
     def tearDownClass(cls):
@@ -335,7 +358,7 @@ class TestSchemasMatchTheBinary(unittest.TestCase):
 
             exe = get_executable()
         except Exception as e:  # binary missing / wrong platform
-            raise unittest.SkipTest(f"sifibridge binary unavailable: {e}")
+            _no_bridge(f"sifibridge binary unavailable: {e}")
 
         cls._tmp = tempfile.TemporaryDirectory()
         result = subprocess.run(
@@ -345,7 +368,7 @@ class TestSchemasMatchTheBinary(unittest.TestCase):
         )
         if result.returncode != 0:
             cls._tmp.cleanup()
-            raise unittest.SkipTest(
+            _no_bridge(
                 f"`sifibridge schema` failed ({result.returncode}): "
                 f"{result.stderr.decode(errors='replace')[:300]}"
             )

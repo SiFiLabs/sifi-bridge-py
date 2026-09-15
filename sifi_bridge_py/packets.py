@@ -29,6 +29,11 @@ class PacketType(Enum):
     """
     Data packet types that can be received from SiFi Bridge.
 
+    Every member here is declared by the ``PacketType`` schema the binary
+    exports, so none of them is unused even though the wrapper itself never
+    mentions some: they are the vocabulary a caller matches incoming packets
+    against. ``tests/test_integration.py`` fails if a member goes missing.
+
     # Example
 
     ```python
@@ -47,10 +52,13 @@ class PacketType(Enum):
     IMU = "imu"
     PPG = "ppg"
     EMG_ARMBAND = "emg_armband"
+    LOW_LATENCY = "low_latency"
     TEMPERATURE = "temperature"
     MEMORY = "memory"
     STATUS = "status"
     START_TIME = "start_time"
+    START_PACKET = "start_packet"
+    DEVICE_INFO = "device_info"
     EVENT = "event"
     INVALID = "invalid"
 
@@ -75,6 +83,8 @@ class PacketStatus(Enum):
     RECORDING = "recording"
     MEMORY_DOWNLOAD_COMPLETED = "memory_download_completed"
     MEMORY_ERASED = "memory_erased"
+    BAD_PAGE_INDEX = "bad_page_index"
+    BAD_PACKET_LENGTH = "bad_packet_length"
     INVALID_DATETIME = "invalid_datetime"
     """The device's clock reported a date that does not exist (an impossible
     date, or an hour skipped by a daylight-saving change). The acquisition
@@ -153,6 +163,11 @@ class BioChannel(Enum):
 
     BATTERY = "battery_%"
     MEMORY_USED_KBYTES = "memory_used_kbytes"
+
+    BAD_PAGE_INDEX = "bad_page_index"
+    BAD_PAGE_TOTAL = "bad_page_total"
+    TEST_PROGRESS = "test_progress"
+    """Flash self-test diagnostics."""
 
     YEAR = "year"
     MONTH = "month"

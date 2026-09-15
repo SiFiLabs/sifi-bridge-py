@@ -99,8 +99,20 @@ jobs:
             tar -xzf "bridge/archive.tar.gz" -C bridge
           fi
           exe="$(find bridge -name '${{ matrix.exe }}' -type f | head -n1)"
+          test -n "$exe" || { echo "no ${{ matrix.exe }} in the archive"; exit 1; }
           chmod +x "$exe"
-          echo "SIFIBRIDGE_EXE=$(cd "$(dirname "$exe")" && pwd)/${{ matrix.exe }}" >> "$GITHUB_ENV"
+          dir="$(cd "$(dirname "$exe")" && pwd)"
+          # This step runs under bash, which on Windows means MSYS paths like
+          # /d/a/... . Python cannot open those, so the binary would look
+          # missing and every test would skip itself into a green run.
+          if command -v cygpath >/dev/null 2>&1; then
+            dir="$(cygpath -m "$dir")"
+          fi
+          echo "SIFIBRIDGE_EXE=${dir}/${{ matrix.exe }}" >> "$GITHUB_ENV"
 
       - name: Integration tests (Tier 2)
+        # Turn "no binary" from a skip into a failure: a skipped Tier 2 run
+        # reports OK while testing nothing.
+        env:
+          SIFI_REQUIRE_BRIDGE: "1"
         run: uv run python -m unittest tests.test_integration -v
