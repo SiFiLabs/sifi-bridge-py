@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/sifi_bridge_py)](https://pypi.org/project/sifi-bridge-py/)
 [![License](https://img.shields.io/github/license/SiFiLabs/sifi-bridge-py)](https://github.com/SiFiLabs/sifi-bridge-py/blob/main/LICENSE)
 
-A Python wrapper over the [SiFi Bridge CLI](https://github.com/SiFiLabs/sifi-bridge-pub) for talking to SiFi Labs devices (BioPoint, SiFiBand, SiFiBand Focus). Spawns `sifibridge` as a subprocess, drives it via its REPL, and delivers sensor data over a local TCP socket — so your code reads Python dicts instead of parsing JSON lines.
+A Python wrapper over the [SiFi Bridge CLI](https://github.com/SiFiLabs/sifi-bridge-pub) for talking to SiFi Labs devices (BioPoint, SiFiBand, SiFiBand Focus).
 
 This release targets **SiFi Bridge 2.0.0** and is not compatible with 1.x. See [Migrating from 1.x](#migrating-from-1x).
 
@@ -13,7 +13,7 @@ This release targets **SiFi Bridge 2.0.0** and is not compatible with 1.x. See [
 pip install sifi-bridge-py
 ```
 
-The `sifibridge` CLI binary ships bundled per platform via the `sifibridge-bin` wheel; no separate install is needed on Linux (x86_64, aarch64), macOS (x86_64, arm64), or Windows (x86_64).
+The `sifibridge` CLI binary ships bundled per platform via the `sifibridge-bin` wheel.
 
 ## Quickstart
 
@@ -38,34 +38,22 @@ with SifiBridge() as sb:
 ```
 
 `sample_rate` is measured live and takes two samples to establish, so it is
-absent from the first packet of a stream rather than reported as zero — read it
-with `.get()`. `samples_lost` is likewise omitted on a healthy packet.
+absent from the first packet of a stream rather than reported as zero. `samples_lost` is omitted on a healthy packet.
 
-`SifiBridge` is a context manager — leaving the `with` block closes the data socket and shuts down the subprocess. If you can't use `with`, call `sb.close()` explicitly when done.
+`SifiBridge` is a context manager, so leaving the `with` block closes the data socket and shuts down the subprocess. If you can't use `with`, call `sb.close()` explicitly when done.
 
 ## Configuration is incremental
 
-The wrapper mirrors the CLI: sifibridge leaves a setting untouched when its flag is absent, so every `configure_*` parameter defaults to `None` and only the parameters you actually pass are sent. `configure_emg(fs=1000)` here does exactly what `configure emg --fs 1000` does in the REPL.
+Most methods' parameters default to `None`. Only specified parameters are actually applied for incremental configuration.
 
 ```python
 sb.configure_emg(fs=2000, mains_notch=50, bandpass=True, flo=20, fhi=450)
 sb.configure_emg(fs=1000)   # changes the rate; the filters above are untouched
 ```
 
-The same applies to `configure_sensors`: an omitted sensor keeps its current state, so `configure_sensors(ppg=True)` enables PPG without disabling anything else. To turn a sensor off, say so explicitly (`configure_sensors(ppg=False)`).
-
-The mains notch is the one tri-state parameter, because "leave it alone" and "switch it off" are different things:
-
-```python
-sb.configure_ecg(mains_notch=50)      # 50 Hz
-sb.configure_ecg(mains_notch=60)      # 60 Hz
-sb.configure_ecg(mains_notch="off")   # disable it (0 and False also work)
-sb.configure_ecg(mains_notch=None)    # leave it however it is (the default)
-```
-
 ## Targeting several devices
 
-Every device command accepts `all=True` (apply to every connected device) or `devices=[...]` (apply to the named handles — a device ID or name):
+Every device command accepts `all=True` (apply to every connected device) or `devices=[...]` (apply to the named handles, either by device ID or name):
 
 ```python
 sb.configure_emg(fs=1000, all=True)
@@ -74,17 +62,17 @@ sb.start(devices=["left_arm", "right_arm"])
 
 When you target more than one device, sifibridge answers with an aggregated response, so these calls return a **list of per-device responses** instead of the single-device value. `start()`, `stop()` and `send_event()` return `True`/`False` for one device and a list for several.
 
-## API tour
+## Library overview
 
 **Lifecycle**
 
-- `SifiBridge(use_lsl=False)` spawns the CLI; pass `use_lsl=True` to also stream data to Lab Streaming Layer.
+- `SifiBridge(use_lsl=False)` spawns the process. Pass `use_lsl=True` to also stream data to Lab Streaming Layer.
 - `sb.close()` (or `with` block exit) terminates the subprocess.
 
 **Discovery & connection**
 
 - `sb.list_devices(ListSources.BLE | .SERIAL | .DEVICES)` returns one dict per device (`id`, `name`, …).
-- `sb.connect(handle=None)` connects to any available device, or to a specific BLE name, MAC address (Linux/Windows) or CoreBluetooth UUID (macOS). Returns `True` on success, `False` if nothing matched in time.
+- `sb.connect(handle=None)` connects to any available device, or to a specific BLE name, MAC address (Linux/Windows) or UUID (macOS). Returns `True` on success, `False` if nothing matched in time.
 - `sb.disconnect()` closes the link and drops the session.
 - `sb.select_device(handle)` switches which connected device subsequent commands target.
 - `sb.rename_device(name)` gives the device a custom BLE name (max 14 bytes); `sb.rename_device(None)` resets it.
@@ -101,9 +89,9 @@ When you target more than one device, sifibridge answers with an aggregated resp
 - `sb.set_onboard_filtering(enable)`, `sb.set_high_gain(enable)`, `sb.set_low_latency_mode(on)`, `sb.set_night_mode(on)`, `sb.set_ble_power(BleTxPower.LOW|MEDIUM|HIGH)`.
 - `sb.set_memory_mode(MemoryMode.STREAMING | DEVICE | BOTH)` controls whether data streams over BLE, lands on onboard flash, or both.
 
-PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**. Set either one on its own if you like — the wrapper reads the other back from the device to work out what the rate will be.
+PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**. 
 
-If you would rather say what output rate you want, `sb.configure_ppg_fs(fs)` solves for a pair that delivers it, preferring the most averaging (the cleanest signal) unless you pass `avg` yourself. Reachable rates are 25, 50, 100 and 200 Hz.
+You can directly set a target sampling rate with `sb.configure_ppg_fs(fs)`, which solves for a `(sps, avg)` pair that delivers it, preferring the most averaging (the cleanest signal) unless you pass `avg` yourself. Reachable rates are 25, 50, 100 and 200 Hz.
 
 ```python
 sb.configure_ppg_fs(100)          # sps=800, avg=8 — most averaging
@@ -117,7 +105,7 @@ Temperature has no enable of its own and is not part of `configure_sensors`, but
 - `sb.start(set_default=False)` / `sb.stop()` toggle streaming. `set_default=True` stores the current configuration as the device's power-on default.
 - `sb.get_ecg(timeout=…)`, `get_emg`, `get_eda`, `get_imu`, `get_ppg`, `get_temperature`, `get_event` pop the next packet of that sensor. Each sensor has its own internal queue, so calling `get_ecg()` does **not** drop EMG data that arrived in between. Returns `{}` on timeout. **NOTE**: each packet is also routed to a generic queue read by `get_data()` — don't mix the two APIs on the same instance, or you'll see duplicates.
 - `sb.clear_data_buffer()` drains all internal queues.
-- `DataPacket.from_dict(packet)` wraps a packet dict in a typed view when attribute access reads better than key lookups. Opt-in — the getters keep returning plain dicts, and the original is kept on `.raw`.
+- `DataPacket.from_dict(packet)` wraps a packet dict in a typed view when attribute access reads better than key lookups.
 - `sb.send_event()` emits a software event, which arrives in the stream as an `event` packet timestamped on the device — useful for marking experiment landmarks.
 - `sb.set_status_updates(on)` toggles the ~1 Hz status packets (battery, memory used, device state).
 
@@ -138,8 +126,6 @@ Temperature has no enable of its own and is not part of `configure_sensors`, but
 - `sb.power_off()`
 - `sb.dfu(package_path)` updates the device firmware over BLE.
 
-> **Paths and names cannot contain spaces.** The sifibridge REPL splits command lines on whitespace and does not support quoting, so `output_dir`, the DFU package path, and device names/handles must be space-free. The wrapper raises `ValueError` up front rather than sending something the CLI would mis-parse. Export to a path without spaces and move the files afterwards.
-
 ## Typed packets
 
 The getters return plain dicts. When that gets tedious, wrap one:
@@ -159,11 +145,9 @@ if raw:
 
 `sample_rate` is `None` rather than `0.0` until the rate has been measured, and unmodelled fields stay reachable on `packet.raw`.
 
-The `PacketType`, `PacketStatus`, `DeviceType` and `BioChannel` enums mirror the schemas `sifibridge schema` exports, and a test in Tier 2 re-exports them from the pinned binary and fails if the two ever disagree — so a value added or renamed in the bridge surfaces in CI rather than as an unfamiliar string in your data.
-
 ## Timestamps
 
-Sample timestamps are **relative to the start of the acquisition**, in seconds — the first sample of a stream is at `0.0`. The acquisition's Unix epoch start arrives once, on the `start_time` packet:
+Sample timestamps are **relative to the start of the acquisition**, in seconds. The first sample of a stream is at `0.0`. The acquisition's Unix epoch start arrives once, on the `start_time` packet:
 
 ```python
 from sifi_bridge_py.utils import get_start_time, absolute_timestamps
@@ -178,25 +162,7 @@ emg = sb.get_emg()
 t = absolute_timestamps(emg, start)   # one Unix epoch timestamp per sample
 ```
 
-Don't use a packet's `received_at` for this: that is when the host received the packet, including BLE transit and buffering, not a per-sample time.
-
-## Where the wrapper differs from the CLI
-
-The wrapper aims to behave exactly as the REPL does — same flags, same
-semantics, same argument rules — so that `configure_emg(fs=1000)` and
-`configure emg --fs 1000` are interchangeable. It deviates in four places, all
-deliberate:
-
-| Deviation | Why |
-| --- | --- |
-| `set_motor_intensity` accepts 1–10; the CLI accepts 0–10 | 0 is not a useful intensity, and reaching it by accident is easier than reaching it on purpose. Use `set_motor(False)` to stop the motor. |
-| PPG effective rate (`sps / avg`) is capped at 200 Hz; the CLI allows 800 | Above this the BLE link cannot keep up and packets start reporting `samples_lost`. Better to refuse the configuration than to hand back lossy data. |
-| Paths and device names containing whitespace or `;` raise `ValueError` | The REPL splits on whitespace with no quoting and treats `;` as a command separator, so these cannot be expressed at all. The CLI would mis-parse them; the wrapper says why. |
-| `download_memory_ble` / `download_memory_serial` also export to file | `download-memory` only fills the buffers in 2.0.0. These run `buffer export` afterwards so a download produces files, as it did in 1.x. Use `buffer_pull` if you want the samples in Python instead. |
-
-Everything else — including the mutual exclusions on `buffer clear` and
-`buffer pull`, and the allowed value sets for every sensor parameter — mirrors
-what the CLI itself enforces.
+Don't use a packet's `received_at` for this: that is when the host received the packet (time of arrival).
 
 ## Error handling
 
@@ -205,7 +171,7 @@ from sifi_bridge_py import SifiBridgeError, SifiBridgeTimeout
 ```
 
 - `SifiBridgeTimeout` (subclass of `SifiBridgeError`) — the CLI didn't reply within the timeout. Retry-friendly. `connect()` already catches this internally and returns `False`.
-- `SifiBridgeError` — the CLI returned an explicit `{"error": ...}` response. Indicates malformed input or an unsupported operation; fix the call rather than retrying.
+- `SifiBridgeError` — the CLI returned an explicit `{"error": ...}` response. Indicates malformed input or an unsupported operation.
 
 Catch `SifiBridgeTimeout` specifically when you want to distinguish "still trying" from "broken":
 
@@ -239,7 +205,7 @@ SiFi Bridge 2.0.0 reworked the REPL, so this is a breaking release. The changes 
 | `list_devices()` returned names | returns dicts with `id` and `name` |
 | `BioPoint_v1_1` … `BioPoint_v1_3` device types | a single `BioPoint`; revisions are in `info()` |
 
-Packet fields moved too: `data_lost_count` → `samples_lost`, and the packet's arrival time `timestamp` → `received_at`, with a new per-sample `timestamps` array (relative to the acquisition start, which is reported as `start_time`). The full list is in the [SiFi Bridge changelog](https://github.com/SiFiLabs/sifi-bridge-pub/blob/main/CHANGELOG.md).
+Packet fields moved too: `data_lost_count` → `samples_lost`, and the packet's arrival time `timestamp` → `received_at`, with a new per-sample `timestamps` array. The full list is in the [SiFi Bridge changelog](https://github.com/SiFiLabs/sifi-bridge-pub/blob/main/CHANGELOG.md).
 
 ## Examples
 
@@ -247,7 +213,7 @@ Examples are available on our [documentation website](https://docs.sifilabs.com/
 
 ## Advanced usage
 
-The wrapper exposes the common surface, but the underlying CLI has more. To explore, run `sifibridge -p` interactively and type `help` — anything you find there can also be reached from Python by subclassing `SifiBridge` and calling `self._request("…")` directly. The REPL command reference is documented at [docs.sifilabs.com/cli](https://docs.sifilabs.com/cli).
+The wrapper exposes the common surface, but the underlying CLI has more. To explore, run `sifibridge -p` interactively and type `help`. Anything you find there can also be reached from Python by subclassing `SifiBridge` and calling `self._request("…")` directly. The REPL command reference is documented at [docs.sifilabs.com/cli](https://docs.sifilabs.com/cli).
 
 ## Tests
 
@@ -259,7 +225,7 @@ uv run python -m unittest tests.test_integration -v   # spawns a real sifibridge
 SIFI_HW=BioPoint uv run python -m unittest tests.test_hardware -v   # needs a device
 ```
 
-Tier 1 and Tier 2 run in CI on every push. Tier 2 also feeds every command line the wrapper can generate to a real `sifibridge` and asserts it parses — the wrapper builds those lines as strings, so a renamed or removed CLI flag is otherwise invisible until runtime. Tier 3 requires a powered-on device and is gated on `SIFI_HW`.
+Tier 1 and Tier 2 run in CI on every push. Tier 2 also feeds every command line the wrapper can generate to a real `sifibridge` and asserts it parses. The wrapper builds those lines as strings, so a renamed or removed CLI flag is otherwise invisible until runtime. Tier 3 requires a powered-on device and is requires the  `SIFI_HW` environment variable.
 
 ## Versioning
 
