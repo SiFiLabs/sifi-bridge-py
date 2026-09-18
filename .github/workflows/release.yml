@@ -3,7 +3,9 @@ name: release
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+      # Supports tags like: 1.0.0, 2.0.0-beta.1, 2.0.0-b.1, v2.0.0, etc.
+      - "[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
   pypi-publish:
@@ -12,21 +14,21 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - name: checkout
-        uses: actions/checkout@v2
-      
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
-        
-      - name: Install dependencies and pdm
-        run: |
-          python -m pip install --upgrade pip
-          curl -sSL https://pdm-project.org/install-pdm.py | python3 -
+          python-version: "3.x"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
 
       - name: Build package
-        run: pdm build -v
-        
+        run: uv build
+
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
