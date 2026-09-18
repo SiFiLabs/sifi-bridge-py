@@ -8,14 +8,17 @@ without spawning sifibridge or owning a device:
    ``--device`` vs ``--handle`` or ``--iir`` vs ``--led-ir``), and
 2. that the response key is unwrapped correctly (e.g. ``["connect"]["connected"]``).
 
-Command lines are compared token-wise (``str.split()``) so incidental
-whitespace is ignored while flags and values still must match exactly.
+Command lines are compared token-wise so incidental whitespace is ignored
+while flags and values still must match exactly: ``tok`` splits on whitespace,
+and ``argv`` unquotes first (sifibridge 2.0.1 quotes like a shell), which is
+what a value containing a space must be checked with.
 
 Note that a command line being well-formed *here* does not prove sifibridge
 accepts it — ``tests/test_integration.py`` feeds every one of these lines to a
 real binary for that.
 """
 
+import shlex
 import unittest
 
 from sifi_bridge_py import utils
@@ -82,6 +85,16 @@ def make_sb(response=None):
 
 def tok(line: str):
     return line.split()
+
+
+def argv(line: str):
+    """Tokenize a command line the way the sifibridge REPL does.
+
+    ``tok`` splits on every space, so it cannot tell ``--dir 'My Data'`` from
+    two arguments. ``shlex`` speaks the same quoting dialect the 2.0.1 REPL
+    parses, so this asserts the value the binary would actually receive.
+    """
+    return shlex.split(line)
 
 
 class TestOptionalConfiguration(unittest.TestCase):
@@ -322,10 +335,17 @@ class TestDeviceTargeting(unittest.TestCase):
 
     def test_device_handles_are_validated(self):
         sb, req = make_sb()
-        with self.assertRaises(ValueError):
-            sb.start(devices="has space")
+        # A comma separates handles inside --devices and survives unquoting,
+        # so it is still unusable; a newline ends the REPL line outright.
         with self.assertRaises(ValueError):
             sb.start(devices=["ok", "has,comma"])
+        with self.assertRaises(ValueError):
+            sb.start(devices="has\nnewline")
+
+    def test_device_handles_with_spaces_are_quoted(self):
+        sb, req = make_sb()
+        sb.start(devices=["has space", "other"])
+        self.assertEqual(argv(req.last), ["start", "--devices", "has space,other"])
 
     def test_targets_on_device_commands(self):
         sb, req = make_sb()
@@ -435,11 +455,13 @@ class TestDeviceCommands(unittest.TestCase):
         sb.dfu("pkg.zip", handle="dev1", resume=True)
         self.assertEqual(tok(req.last), tok("dfu --handle dev1 --resume pkg.zip"))
 
-    def test_dfu_rejects_path_with_spaces(self):
-        # The REPL splits on whitespace and does not support quoting.
-        sb, req = make_sb()
-        with self.assertRaises(ValueError):
-            sb.dfu("C:/My Files/pkg.zip")
+    def test_dfu_quotes_path_with_spaces(self):
+        sb, req = make_sb({"dfu": {}})
+        sb.dfu("C:/My Files/pkg.zip", handle="my band")
+        self.assertEqual(
+            argv(req.last),
+            ["dfu", "--handle", "my band", "C:/My Files/pkg.zip"],
+        )
 
     def test_toggle_configs(self):
         sb, req = make_sb()
@@ -531,10 +553,22 @@ class TestSessionCommands(unittest.TestCase):
         self.assertEqual(req.calls[0], "select myname")
         self.assertEqual(req.calls[1], "info")
 
-    def test_select_device_rejects_spaces(self):
+    def test_select_device_quotes_spaces(self):
+        sb, req = make_sb()
+        sb.select_device("has space")
+        self.assertEqual(argv(req.calls[0]), ["select", "has space"])
+
+    def test_select_device_quotes_command_separator(self):
+        # ';' separates commands in the REPL, so an unquoted name carrying one
+        # would run whatever follows it as a second command.
+        sb, req = make_sb()
+        sb.select_device("a;disconnect")
+        self.assertEqual(argv(req.calls[0]), ["select", "a;disconnect"])
+
+    def test_select_device_rejects_newline(self):
         sb, req = make_sb()
         with self.assertRaises(ValueError):
-            sb.select_device("has space")
+            sb.select_device("two\nlines")
 
     def test_rename_device(self):
         sb, req = make_sb({"rename": {"name": "x"}})
@@ -543,10 +577,10 @@ class TestSessionCommands(unittest.TestCase):
         sb.rename_device(None)
         self.assertEqual(tok(req.last), tok("rename --reset"))
 
-    def test_rename_device_rejects_spaces(self):
-        sb, req = make_sb()
-        with self.assertRaises(ValueError):
-            sb.rename_device("bad name")
+    def test_rename_device_quotes_spaces(self):
+        sb, req = make_sb({"rename": {}})
+        sb.rename_device("my band")
+        self.assertEqual(argv(req.last), ["rename", "my band"])
 
     def test_rename_device_enforces_14_byte_limit(self):
         sb, req = make_sb({"rename": {}})
@@ -556,6 +590,10 @@ class TestSessionCommands(unittest.TestCase):
         # The firmware limit is in bytes, not characters.
         with self.assertRaises(ValueError):
             sb.rename_device("é" * 8)
+        # Quoting does not buy room: the limit applies to the name itself.
+        sb.rename_device("a b c d e f g")
+        with self.assertRaises(ValueError):
+            sb.rename_device("a b c d e f g h")
 
     def test_list_devices(self):
         devices = [{"id": "C2:EC:EF:34:0E:00", "name": "my_biopoint"}]
@@ -577,10 +615,10 @@ class TestSessionCommands(unittest.TestCase):
         self.assertFalse(sb.connect())
         self.assertEqual(req.calls[0].strip(), "connect")
 
-    def test_connect_rejects_handle_with_spaces(self):
-        sb, req = make_sb()
-        with self.assertRaises(ValueError):
-            sb.connect("has space")
+    def test_connect_quotes_handle_with_spaces(self):
+        sb, req = make_sb({"connect": {"connected": True}})
+        sb.connect("My BioPoint")
+        self.assertEqual(argv(req.last), ["connect", "My BioPoint"])
 
     def test_connect_timeout_returns_false(self):
         def resp(line):
@@ -638,11 +676,19 @@ class TestBufferCommands(unittest.TestCase):
         self.assertNotIn("--handle", req.last)
         self.assertEqual(tok(req.last), tok("buffer export --dir . --format csv"))
 
-    def test_buffer_export_rejects_output_dir_with_spaces(self):
-        # The REPL cannot express it: it splits on whitespace, no quoting.
+    def test_buffer_export_quotes_output_dir_with_spaces(self):
+        # 2.0.1 parses quotes, so a path with spaces goes through intact.
+        sb, req = make_sb({"buffer_export": {}})
+        sb.buffer_export(output_dir="C:/Users/me/My Data")
+        self.assertEqual(
+            argv(req.last),
+            ["buffer", "export", "--dir", "C:/Users/me/My Data", "--format", "csv"],
+        )
+
+    def test_buffer_export_rejects_output_dir_with_newline(self):
         sb, req = make_sb()
         with self.assertRaises(ValueError):
-            sb.buffer_export(output_dir="C:/Users/me/My Data")
+            sb.buffer_export(output_dir="two\nlines")
 
     def test_buffer_list(self):
         sb, req = make_sb({"buffer_list": {"acquisitions": [{"id": 1}]}})

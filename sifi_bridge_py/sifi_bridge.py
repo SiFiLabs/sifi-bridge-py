@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess as sp
 import json
+import shlex
 import socket
 import time
 from enum import Enum
@@ -339,13 +340,12 @@ class SifiBridge:
         """
         Select a device by ID or BLE local name.
 
-        :raises ValueError: If `name` contains whitespace or ``;``.
+        :raises ValueError: If `name` contains a newline.
         :raises SifiBridgeError: If no device matches `name`.
 
         :return: Active device ID
         """
-        self._check_repl_token(name, "Device name")
-        self._request(f"select {name}")
+        self._request(f"select {self._quote(name, 'Device name')}")
         return self.get_active_device()
 
     def rename_device(self, name: str | None = None) -> dict:
@@ -353,23 +353,25 @@ class SifiBridge:
         Rename the active device. Pass `None` to reset the device's name to
         its factory default.
 
-        :param name: New name, at most 14 bytes (the firmware's limit), with no
-            whitespace or ``;``.
+        :param name: New name, at most 14 bytes (the firmware's limit). Spaces
+            are fine; the wrapper quotes the name for the REPL.
 
-        :raises ValueError: If `name` contains whitespace or ``;``, or exceeds
-            14 bytes.
+        :raises ValueError: If `name` contains a newline or exceeds 14 bytes.
         :raises SifiBridgeError: If no device is currently connected.
 
         :return: `rename` response payload.
         """
         if name is not None:
-            self._check_repl_token(name, "Device name")
             encoded = len(name.encode("utf-8"))
             if encoded > 14:
                 raise ValueError(
                     f"Device name must be at most 14 bytes, got {encoded} ({name!r})"
                 )
-        cmd = "rename --reset" if name is None else f"rename {name}"
+        cmd = (
+            "rename --reset"
+            if name is None
+            else f"rename {self._quote(name, 'Device name')}"
+        )
         return self._request(cmd)["rename"]
 
     def list_devices(self, source: ListSources | str) -> list[dict]:
@@ -397,15 +399,13 @@ class SifiBridge:
         :param timeout: Connection timeout
 
         :return: True if connected, False if connection failed
-        :raises ValueError: If `handle` contains whitespace or ``;``.
+        :raises ValueError: If `handle` contains a newline.
         :raises SifiBridgeError: sifibridge returned an error.
         """
-        if handle is not None:
-            self._check_repl_token(handle, "Device handle")
+        # An empty handle auto-connects, same as None.
+        quoted = self._quote(handle, "Device handle") if handle else ""
         try:
-            resp = self._request(
-                f"connect {handle if handle is not None else ''}", timeout
-            )
+            resp = self._request(f"connect {quoted}", timeout)
         except SifiBridgeTimeout as e:
             logger.warning(f"Could not connect to {handle}: {e.message}")
             return False
@@ -440,26 +440,28 @@ class SifiBridge:
     than letting a caller discover it from lossy data."""
 
     @staticmethod
-    def _check_repl_token(value: str, what: str) -> str:
-        """Reject a value the sifibridge REPL cannot carry in a command line.
+    def _quote(value: str, what: str) -> str:
+        """Render `value` as a single REPL token, quoting it if it needs it.
 
-        The 2.0.0 REPL splits each line on whitespace and does **not** support
-        quoting, and it treats ``;`` as a command separator. A value containing
-        either would be silently mis-parsed (or, worse, split into a second
-        command), so the wrapper refuses it with an explanation instead of
-        sending it.
+        sifibridge 2.0.1 tokenizes each line shell-style: single or double
+        quotes hold a value together, adjacent quoted runs concatenate, and
+        ``;`` inside quotes is a literal rather than a command separator.
+        There is no backslash escape, but `shlex.quote` never emits one — it
+        wraps in single quotes and splices any embedded quote back in — so
+        every value round-trips, spaces and ``;`` included.
+
+        The one value the REPL cannot carry is a newline: it reads one command
+        per line, so the line would end before the closing quote.
+
+        (sifibridge 2.0.0 had no quoting at all and split on whitespace, which
+        is why such values used to be refused outright.)
         """
-        if any(c.isspace() for c in value):
+        if "\n" in value or "\r" in value:
             raise ValueError(
-                f"{what} must not contain whitespace ({value!r}): the sifibridge "
-                "REPL splits commands on whitespace and does not support quoting"
+                f"{what} must not contain a newline ({value!r}): the sifibridge "
+                "REPL reads one command per line"
             )
-        if ";" in value:
-            raise ValueError(
-                f"{what} must not contain ';' ({value!r}): the sifibridge REPL "
-                "treats ';' as a command separator"
-            )
-        return value
+        return shlex.quote(value)
 
     @staticmethod
     def _join(*parts: str) -> str:
@@ -499,7 +501,7 @@ class SifiBridge:
         :param devices: A device handle, or a sequence of them, to target
             (``--devices a,b``). A handle is a device ID or name.
         :raises ValueError: If both `all` and `devices` are given, or a handle
-            contains whitespace, ``,`` or ``;``.
+            contains ``,`` or a newline.
         """
         if all and devices:
             raise ValueError("Pass either all=True or devices=..., not both")
@@ -509,13 +511,14 @@ class SifiBridge:
             return ""
         handles = [devices] if isinstance(devices, str) else list(devices)
         for handle in handles:
-            cls._check_repl_token(handle, "Device handle")
+            # Quoting carries spaces through, but the comma is split on after
+            # unquoting, so it still cannot appear inside a handle.
             if "," in handle:
                 raise ValueError(
                     f"Device handle must not contain ',' ({handle!r}): it "
                     "separates handles in --devices"
                 )
-        return f"--devices {','.join(handles)}"
+        return f"--devices {cls._quote(','.join(handles), 'Device handles')}"
 
     @staticmethod
     def _mains_notch_flag(value) -> str:
@@ -1141,8 +1144,7 @@ class SifiBridge:
         buffering subsystem rather than writing files, so this blocks until the
         download completes and then runs `buffer_export()` for you.
 
-        :param output_dir: Directory to save the exported data. Must not
-            contain whitespace (see `buffer_export`).
+        :param output_dir: Directory to save the exported data.
         :param fmt: Output format. Either ``"csv"`` or ``"hdf5"``.
         :param timeout: How long to wait for the download. Downloading a full
             flash over BLE takes hours, hence the very long default.
@@ -1166,14 +1168,13 @@ class SifiBridge:
         to file. Blocking, like `download_memory_ble`.
 
         :param port: Serial port to use (e.g. ``COM3``, ``/dev/ttyACM0``).
-        :param output_dir: Directory to save the exported data. Must not
-            contain whitespace (see `buffer_export`).
+        :param output_dir: Directory to save the exported data.
         :param fmt: Output format. Either ``"csv"`` or ``"hdf5"``.
         :param timeout: How long to wait for the download.
 
         :return: The ``buffer_export`` response payload.
         """
-        self._check_repl_token(port, "Serial port")
+        port = self._quote(port, "Serial port")
         self._request(f"download-memory --serial {port}", timeout=timeout)
         active_device = self.get_active_device()
         return self.buffer_export(fmt=fmt, output_dir=output_dir, device=active_device)
@@ -1224,26 +1225,24 @@ class SifiBridge:
         """
         Update a device's firmware over BLE.
 
-        :param package: Path to the DFU zip package. Must not contain
-            whitespace: the sifibridge REPL splits on whitespace and does not
-            support quoting, so a path like ``C:/My Files/pkg.zip`` cannot be
-            expressed. Move the package somewhere without spaces first.
+        :param package: Path to the DFU zip package. Paths with spaces (e.g.
+            ``C:/My Files/pkg.zip``) are fine; the wrapper quotes them.
         :param handle: Device handle to update. Defaults to the active device.
         :param resume: Resume a DFU that was interrupted.
         :param timeout: How long to wait for the update to finish.
 
         :return: The ``dfu`` response payload.
-        :raises ValueError: If `package` or `handle` contains whitespace.
+        :raises ValueError: If `package` or `handle` contains a newline.
         :raises SifiBridgeError: If sifibridge returns an error response.
         """
-        self._check_repl_token(package, "DFU package path")
-        if handle is not None:
-            self._check_repl_token(handle, "Device handle")
         cmd = self._join(
             "dfu",
-            self._flag("handle", handle),
+            self._flag(
+                "handle",
+                None if handle is None else self._quote(handle, "Device handle"),
+            ),
             "--resume" if resume else "",
-            package,
+            self._quote(package, "DFU package path"),
         )
         return self._request(cmd, timeout=timeout)["dfu"]
 
@@ -1375,23 +1374,18 @@ class SifiBridge:
         Export a device's buffered acquisitions to file.
 
         :param fmt: Output format. Either `csv` or `hdf5`.
-        :param output_dir: Directory to save the exported data. Must not
-            contain whitespace: the sifibridge REPL splits commands on
-            whitespace and does not support quoting, so a path like
-            ``C:/Users/me/My Data`` cannot be expressed. Export somewhere
-            without spaces and move the files afterwards.
+        :param output_dir: Directory to save the exported data. Paths with
+            spaces (e.g. ``C:/Users/me/My Data``) are fine; the wrapper quotes
+            them for the REPL.
         :param device: Device ID or name. Defaults to the active device.
 
-        :raises ValueError: If `output_dir` or `device` contains whitespace
-            or ``;``.
+        :raises ValueError: If `output_dir` or `device` contains a newline.
         """
-        self._check_repl_token(str(output_dir), "Output directory")
         cmd_parts = ["buffer export"]
         if device is not None:
-            self._check_repl_token(device, "Device handle")
-            cmd_parts.append(f"--handle {device}")
-        cmd_parts.append(f"--dir {output_dir}")
-        cmd_parts.append(f"--format {fmt}")
+            cmd_parts.append(f"--handle {self._quote(device, 'Device handle')}")
+        cmd_parts.append(f"--dir {self._quote(str(output_dir), 'Output directory')}")
+        cmd_parts.append(f"--format {self._quote(fmt, 'Export format')}")
         return self._request(" ".join(cmd_parts))["buffer_export"]
 
     def buffer_list(self, device: str | None = None) -> list[dict]:
@@ -1409,8 +1403,7 @@ class SifiBridge:
         """
         cmd_parts = ["buffer list"]
         if device is not None:
-            self._check_repl_token(device, "Device handle")
-            cmd_parts.append(f"--handle {device}")
+            cmd_parts.append(f"--handle {self._quote(device, 'Device handle')}")
         return self._request(" ".join(cmd_parts))["buffer_list"]["acquisitions"]
 
     def buffer_info(
@@ -1429,8 +1422,7 @@ class SifiBridge:
         """
         cmd_parts = ["buffer info"]
         if device is not None:
-            self._check_repl_token(device, "Device handle")
-            cmd_parts.append(f"--handle {device}")
+            cmd_parts.append(f"--handle {self._quote(device, 'Device handle')}")
         if acquisition_id is not None:
             cmd_parts.append(f"--id {acquisition_id}")
         return self._request(" ".join(cmd_parts))["buffer_info"]
@@ -1474,10 +1466,9 @@ class SifiBridge:
 
         cmd_parts = ["buffer pull"]
         if device is not None:
-            self._check_repl_token(device, "Device handle")
-            cmd_parts.append(f"--handle {device}")
+            cmd_parts.append(f"--handle {self._quote(device, 'Device handle')}")
         for s in sensors:
-            cmd_parts.append(f"--sensor {s}")
+            cmd_parts.append(f"--sensor {self._quote(s, 'Sensor')}")
         if acquisition_id is not None:
             cmd_parts.append(f"--id {acquisition_id}")
         if last_seconds is not None:
@@ -1509,8 +1500,7 @@ class SifiBridge:
             raise ValueError("Pass at most one of device, acquisition_id, or all")
         cmd_parts = ["buffer clear"]
         if device is not None:
-            self._check_repl_token(device, "Device handle")
-            cmd_parts.append(f"--handle {device}")
+            cmd_parts.append(f"--handle {self._quote(device, 'Device handle')}")
         if acquisition_id is not None:
             cmd_parts.append(f"--id {acquisition_id}")
         if all:
@@ -1577,9 +1567,7 @@ class SifiBridge:
             )
         return resp
 
-    def _await_response(
-        self, line: str, expected: str | None, timeout: float
-    ) -> dict:
+    def _await_response(self, line: str, expected: str | None, timeout: float) -> dict:
         """Pull responses until one belongs to `line`. See `_request`."""
         deadline = time.monotonic() + timeout
         fallback = None

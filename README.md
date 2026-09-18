@@ -5,8 +5,6 @@
 
 A Python wrapper over the [SiFi Bridge CLI](https://github.com/SiFiLabs/sifi-bridge-pub) for talking to SiFi Labs devices (BioPoint, SiFiBand, SiFiBand Focus).
 
-This release targets **SiFi Bridge 2.0.0** and is not compatible with 1.x. See [Migrating from 1.x](#migrating-from-1x).
-
 ## Installing
 
 ```bash
@@ -89,7 +87,7 @@ When you target more than one device, sifibridge answers with an aggregated resp
 - `sb.set_onboard_filtering(enable)`, `sb.set_high_gain(enable)`, `sb.set_low_latency_mode(on)`, `sb.set_night_mode(on)`, `sb.set_ble_power(BleTxPower.LOW|MEDIUM|HIGH)`.
 - `sb.set_memory_mode(MemoryMode.STREAMING | DEVICE | BOTH)` controls whether data streams over BLE, lands on onboard flash, or both.
 
-PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**. 
+PPG is configured through the two hardware primitives: `sps` (raw AFE rate) and `avg` (averaging factor). The effective output rate is `sps / avg`, and the wrapper caps it at **200 Hz**.
 
 You can directly set a target sampling rate with `sb.configure_ppg_fs(fs)`, which solves for a `(sps, avg)` pair that delivers it, preferring the most averaging (the cleanest signal) unless you pass `avg` yourself. Reachable rates are 25, 50, 100 and 200 Hz.
 
@@ -190,20 +188,20 @@ except SifiBridgeError:
 
 SiFi Bridge 2.0.0 reworked the REPL, so this is a breaking release. The changes you are most likely to hit:
 
-| 1.x | 2.0.0 |
-| --- | --- |
-| `sb.show()` | `sb.info()` |
-| `new` / `delete` device managers | gone — `connect()` creates the session, `disconnect()` removes it |
-| `configure_channels(...)` | `configure_sensors(...)` |
-| `configure_*` defaults overwrote every setting | omitted parameters are left untouched |
-| `configure_imu(gyro_range=…)` | removed; the FIFO pins the gyro full scale per IMU part |
-| `configure_imu(accel_range=2\|4\|8\|16)` | `8` or `16` only |
-| `configure_ppg(iir=…, ired=…)` | `configure_ppg(ir=…, red=…)`, capped at `sps/avg ≤ 200 Hz` |
-| `start_status_updates()` / `stop_status_updates()` | `set_status_updates(on)` |
-| `start_memory_download()` + `memory` packets | `download_memory_ble()` / `download_memory_serial()` |
-| CSV publisher wrote files as data arrived | record into buffers, then `buffer_export()` |
-| `list_devices()` returned names | returns dicts with `id` and `name` |
-| `BioPoint_v1_1` … `BioPoint_v1_3` device types | a single `BioPoint`; revisions are in `info()` |
+| 1.x                                                | 2.0.0                                                             |
+| -------------------------------------------------- | ----------------------------------------------------------------- |
+| `sb.show()`                                        | `sb.info()`                                                       |
+| `new` / `delete` device managers                   | gone — `connect()` creates the session, `disconnect()` removes it |
+| `configure_channels(...)`                          | `configure_sensors(...)`                                          |
+| `configure_*` defaults overwrote every setting     | omitted parameters are left untouched                             |
+| `configure_imu(gyro_range=…)`                      | removed; the FIFO pins the gyro full scale per IMU part           |
+| `configure_imu(accel_range=2\|4\|8\|16)`           | `8` or `16` only                                                  |
+| `configure_ppg(iir=…, ired=…)`                     | `configure_ppg(ir=…, red=…)`, capped at `sps/avg ≤ 200 Hz`        |
+| `start_status_updates()` / `stop_status_updates()` | `set_status_updates(on)`                                          |
+| `start_memory_download()` + `memory` packets       | `download_memory_ble()` / `download_memory_serial()`              |
+| CSV publisher wrote files as data arrived          | record into buffers, then `buffer_export()`                       |
+| `list_devices()` returned names                    | returns dicts with `id` and `name`                                |
+| `BioPoint_v1_1` … `BioPoint_v1_3` device types     | a single `BioPoint`; revisions are in `info()`                    |
 
 Packet fields moved too: `data_lost_count` → `samples_lost`, and the packet's arrival time `timestamp` → `received_at`, with a new per-sample `timestamps` array. The full list is in the [SiFi Bridge changelog](https://github.com/SiFiLabs/sifi-bridge-pub/blob/main/CHANGELOG.md).
 
@@ -213,7 +211,7 @@ Examples are available on our [documentation website](https://docs.sifilabs.com/
 
 ## Advanced usage
 
-The wrapper exposes the common surface, but the underlying CLI has more. To explore, run `sifibridge -p` interactively and type `help`. Anything you find there can also be reached from Python by subclassing `SifiBridge` and calling `self._request("…")` directly. The REPL command reference is documented at [docs.sifilabs.com/cli](https://docs.sifilabs.com/cli).
+The wrapper exposes the common surface, but the underlying CLI has more. To explore, run `sifibridge -p` interactively and type `help`. Anything you find there can also be reached from Python by subclassing `SifiBridge` and calling `self._request("…")` directly — `_request` takes a raw command line, so quote any value carrying a space or `;` yourself (`shlex.quote`, or `self._quote(value, "…")`, which also rejects the newline the REPL cannot carry). The REPL command reference is documented at [docs.sifilabs.com/cli](https://docs.sifilabs.com/cli).
 
 ## Tests
 
@@ -225,7 +223,7 @@ uv run python -m unittest tests.test_integration -v   # spawns a real sifibridge
 SIFI_HW=BioPoint uv run python -m unittest tests.test_hardware -v   # needs a device
 ```
 
-Tier 1 and Tier 2 run in CI on every push. Tier 2 also feeds every command line the wrapper can generate to a real `sifibridge` and asserts it parses. The wrapper builds those lines as strings, so a renamed or removed CLI flag is otherwise invisible until runtime. Tier 3 requires a powered-on device and is requires the  `SIFI_HW` environment variable.
+Tier 1 and Tier 2 run in CI on every push. Tier 2 also feeds every command line the wrapper can generate to a real `sifibridge` and asserts it parses. The wrapper builds those lines as strings, so a renamed or removed CLI flag is otherwise invisible until runtime. Tier 3 requires a powered-on device and is requires the `SIFI_HW` environment variable.
 
 ## Versioning
 

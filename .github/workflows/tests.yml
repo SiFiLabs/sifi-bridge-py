@@ -17,7 +17,7 @@ on:
 env:
   # The sifibridge release this wrapper targets. Bump together with
   # `sifibridge-bin` in pyproject.toml.
-  SIFIBRIDGE_VERSION: "2.0.0"
+  SIFIBRIDGE_VERSION: "2.0.1"
 
 jobs:
   unit:

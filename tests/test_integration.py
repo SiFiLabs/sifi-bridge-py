@@ -148,6 +148,29 @@ class TestIntegration(unittest.TestCase):
         with self.assertRaises(SifiBridgeError):
             self.sb.select_device("definitely-not-a-real-device")
 
+    def test_quoted_values_reach_the_binary_intact(self):
+        """A handle with spaces must arrive as one value, not several.
+
+        sifibridge 2.0.1 parses quotes; 2.0.0 split every line on whitespace.
+        The Tier 1 tests only prove the wrapper quotes, not that the binary
+        unquotes the same way, so this feeds the awkward values to a real
+        parser and reads the handle back out of the "no device matching"
+        message. A parse error, or a truncated handle, fails here.
+        """
+        for handle in [
+            "has space",
+            "two  spaces",
+            "quote'd name",
+            'double"quoted',
+            "semi;colon",
+            "trailing space ",
+        ]:
+            with self.subTest(handle=handle):
+                with self.assertRaises(SifiBridgeError) as cm:
+                    self.sb.select_device(handle)
+                self.assertNotIn("error: ", cm.exception.message)
+                self.assertIn(f"'{handle}'", cm.exception.message)
+
     def test_send_event_without_device_raises(self):
         with self.assertRaises(SifiBridgeError):
             self.sb.send_event()
@@ -209,12 +232,14 @@ COMMAND_MATRIX = [
     ("stop", (), {}),
     ("send_event", (), {}),
     ("rename_device", ("shortname",), {}),
+    ("rename_device", ("my band",), {}),
     ("rename_device", (None,), {}),
     ("connect", ("BioPoint",), {}),
     ("disconnect", (), {}),
     ("info", (), {}),
     ("buffer_export", (), {"fmt": "csv", "output_dir": "."}),
     ("buffer_export", (), {"fmt": "hdf5", "output_dir": "."}),
+    ("buffer_export", (), {"output_dir": "./My Data", "device": "my band"}),
     ("buffer_list", (), {}),
     ("buffer_info", (), {"acquisition_id": 1}),
     ("buffer_pull", ("ecg",), {}),
@@ -223,8 +248,10 @@ COMMAND_MATRIX = [
     ("buffer_clear", (), {"all": True}),
     ("buffer_clear", (), {"acquisition_id": 1}),
     ("dfu", ("nonexistent-package.zip",), {}),
+    ("dfu", ("no such dir/nonexistent package.zip",), {}),
     ("download_memory_ble", ("."), {}),
     ("download_memory_serial", ("COM3", "."), {}),
+    ("download_memory_serial", ("/dev/tty my port", "."), {}),
 ]
 
 # The same matrix again, targeted at several devices. `--all` and `--devices`
@@ -245,6 +272,7 @@ TARGETED_MATRIX = [
     ("power_off", (), {"all": True}),
     ("start", (), {"all": True}),
     ("stop", (), {"devices": ["dev1", "dev2"]}),
+    ("stop", (), {"devices": ["dev one", "dev two"]}),
     ("send_event", (), {"all": True}),
 ]
 
