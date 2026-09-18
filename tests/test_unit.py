@@ -8,12 +8,21 @@ without spawning sifibridge or owning a device:
    ``--device`` vs ``--handle`` or ``--iir`` vs ``--led-ir``), and
 2. that the response key is unwrapped correctly (e.g. ``["connect"]["connected"]``).
 
-Command lines are compared token-wise (``str.split()``) so incidental
-whitespace is ignored while flags and values still must match exactly.
+Command lines are compared token-wise so incidental whitespace is ignored
+while flags and values still must match exactly: ``tok`` splits on whitespace,
+and ``argv`` unquotes first (sifibridge 2.0.1 quotes like a shell), which is
+what a value containing a space must be checked with.
+
+Note that a command line being well-formed *here* does not prove sifibridge
+accepts it — ``tests/test_integration.py`` feeds every one of these lines to a
+real binary for that.
 """
 
+import shlex
 import unittest
 
+from sifi_bridge_py import utils
+from sifi_bridge_py.packets import BioChannel, DataPacket, PacketType
 from sifi_bridge_py.sifi_bridge import (
     SifiBridge,
     SifiBridgeError,
@@ -65,7 +74,7 @@ class FakeRequest:
         return self.calls[-1]
 
 
-def make_sb(response=None) -> tuple[SifiBridge, "FakeRequest"]:
+def make_sb(response=None):
     """A SifiBridge with no subprocess: __init__ is skipped and ``_request`` is
     replaced by a recorder."""
     sb = SifiBridge.__new__(SifiBridge)
@@ -78,18 +87,56 @@ def tok(line: str):
     return line.split()
 
 
-class TestConfigureCommands(unittest.TestCase):
-    def test_configure_sensors(self):
-        sb, req = make_sb()
-        sb.configure_sensors(ecg=True, imu=True)
-        self.assertEqual(
-            tok(req.last),
-            tok("configure sensors --ecg on --emg off --eda off --imu on --ppg off"),
-        )
+def argv(line: str):
+    """Tokenize a command line the way the sifibridge REPL does.
 
-    def test_configure_ecg_default(self):
+    ``tok`` splits on every space, so it cannot tell ``--dir 'My Data'`` from
+    two arguments. ``shlex`` speaks the same quoting dialect the 2.0.1 REPL
+    parses, so this asserts the value the binary would actually receive.
+    """
+    return shlex.split(line)
+
+
+class TestOptionalConfiguration(unittest.TestCase):
+    """sifibridge 2.0.0 leaves a setting untouched when its flag is absent.
+
+    The wrapper must therefore emit *only* the parameters the caller passed: a
+    default-valued flag would silently overwrite a setting the caller never
+    mentioned. These tests pin that down flag by flag — they are the unit-level
+    half of the guarantee, with the round-trip half in ``test_hardware.py``.
+    """
+
+    def test_configure_sensors_emits_only_given_sensors(self):
         sb, req = make_sb()
-        sb.configure_ecg()
+        sb.configure_sensors(ppg=True)
+        self.assertEqual(tok(req.last), tok("configure sensors --ppg on"))
+
+    def test_configure_sensors_off_is_not_omission(self):
+        sb, req = make_sb()
+        sb.configure_sensors(ecg=False, imu=True)
+        self.assertEqual(tok(req.last), tok("configure sensors --ecg off --imu on"))
+
+    def test_configure_sensors_no_args_emits_no_flags(self):
+        sb, req = make_sb()
+        sb.configure_sensors()
+        self.assertEqual(tok(req.last), tok("configure sensors"))
+
+    def test_configure_ecg_fs_only(self):
+        # The headline case: changing fs must not resend the filter settings.
+        sb, req = make_sb()
+        sb.configure_ecg(fs=1000)
+        self.assertEqual(tok(req.last), tok("configure ecg --fs 1000"))
+
+    def test_configure_emg_fs_only(self):
+        sb, req = make_sb()
+        sb.configure_emg(fs=1000)
+        self.assertEqual(tok(req.last), tok("configure emg --fs 1000"))
+
+    def test_configure_ecg_full(self):
+        sb, req = make_sb()
+        sb.configure_ecg(
+            fs=500, dc_notch=True, mains_notch=50, bandpass=True, flo=0, fhi=30
+        )
         self.assertEqual(
             tok(req.last),
             tok(
@@ -98,40 +145,64 @@ class TestConfigureCommands(unittest.TestCase):
             ),
         )
 
-    def test_configure_ecg_mains_notch_variants(self):
+    def test_configure_ecg_false_flags_are_emitted_as_off(self):
         sb, req = make_sb()
-        sb.configure_ecg(mains_notch=None)
-        self.assertIn("--mains-notch off", req.last)
+        sb.configure_ecg(dc_notch=False, bandpass=False)
+        self.assertEqual(
+            tok(req.last), tok("configure ecg --dc-notch off --bandpass off")
+        )
+
+    def test_configure_ecg_zero_cutoff_is_emitted(self):
+        # flo=0 is a real value, not an omission.
+        sb, req = make_sb()
+        sb.configure_ecg(flo=0)
+        self.assertEqual(tok(req.last), tok("configure ecg --bandpass-low 0"))
+
+    def test_mains_notch_tristate(self):
+        sb, req = make_sb()
         sb.configure_ecg(mains_notch=50)
         self.assertIn("--mains-notch 50", req.last)
         sb.configure_ecg(mains_notch=60)
         self.assertIn("--mains-notch 60", req.last)
+        for disable in ("off", 0, False):
+            sb.configure_ecg(mains_notch=disable)
+            self.assertIn("--mains-notch off", req.last)
+        sb.configure_ecg(mains_notch=None)
+        self.assertNotIn("--mains-notch", req.last)
 
-    def test_configure_emg(self):
+    def test_mains_notch_rejects_other_values(self):
         sb, req = make_sb()
-        sb.configure_emg(fs=1000, flo=20, fhi=450)
-        self.assertEqual(
-            tok(req.last),
-            tok(
-                "configure emg --fs 1000 --dc-notch on --mains-notch 50 "
-                "--bandpass on --bandpass-low 20 --bandpass-high 450"
-            ),
-        )
+        with self.assertRaises(ValueError):
+            sb.configure_ecg(mains_notch=100)
 
-    def test_configure_eda_includes_freq(self):
+    def test_configure_eda_freq_optional(self):
         sb, req = make_sb()
         sb.configure_eda(freq=15)
-        self.assertEqual(tok(req.last)[:2], ["configure", "eda"])
-        self.assertIn("--freq 15", req.last)
+        self.assertEqual(tok(req.last), tok("configure eda --freq 15"))
+        sb.configure_eda(fs=50)
+        self.assertEqual(tok(req.last), tok("configure eda --fs 50"))
 
-    def test_configure_ppg_default_uses_led_flags(self):
+    def test_configure_temperature_optional_and_float_format(self):
+        # The binary accepts "0.1", "1", "2", "10"; a float 1.0 must render as
+        # "1", not "1.0", or clap rejects it.
         sb, req = make_sb()
-        sb.configure_ppg()
+        sb.configure_temperature(fs=1.0)
+        self.assertEqual(tok(req.last), tok("configure temperature --fs 1"))
+        sb.configure_temperature(fs=0.1)
+        self.assertEqual(tok(req.last), tok("configure temperature --fs 0.1"))
+        sb.configure_temperature()
+        self.assertEqual(tok(req.last), tok("configure temperature"))
+
+
+class TestPpgConfiguration(unittest.TestCase):
+    def test_configure_ppg_uses_led_flags(self):
+        sb, req = make_sb()
+        sb.configure_ppg(ir=9, red=9, green=9, blue=9, sens="medium")
         self.assertEqual(
             tok(req.last),
             tok(
-                "configure ppg --sps 100 --led-ir 9 --led-red 9 --led-green 9 "
-                "--led-blue 9 --sens medium --avg 1"
+                "configure ppg --led-ir 9 --led-red 9 --led-green 9 "
+                "--led-blue 9 --sens medium"
             ),
         )
 
@@ -142,27 +213,255 @@ class TestConfigureCommands(unittest.TestCase):
         sb.configure_ppg(sens=PpgSensitivity.MAX)
         self.assertIn("--sens max", req.last)
 
-    def test_configure_imu(self):
+    def test_configure_ppg_rate_within_cap(self):
         sb, req = make_sb()
-        sb.configure_imu(fs=200, accel_range=4, gyro_range=1000)
+        sb.configure_ppg(sps=400, avg=2)  # 200 Hz effective, at the cap
+        self.assertEqual(tok(req.last), tok("configure ppg --sps 400 --avg 2"))
+
+    def test_configure_ppg_rate_above_cap_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError) as ctx:
+            sb.configure_ppg(sps=800, avg=2)  # 400 Hz effective
+        self.assertIn("200", str(ctx.exception))
+
+    def test_configure_ppg_sps_alone_reads_avg_from_the_device(self):
+        # The CLI lets you set one without the other, so the wrapper does too:
+        # the missing half is read back so the cap can still be checked.
+        def resp(line):
+            if line == "info":
+                return {"info": {"configuration": {"ppg": {"sps": 100, "avg": 4}}}}
+            return {"configure": {}}
+
+        sb, req = make_sb(resp)
+        sb.configure_ppg(sps=400)  # 400 / 4 (from the device) = 100 Hz, fine
+        self.assertEqual(tok(req.last), tok("configure ppg --sps 400"))
+
+        def resp_low_avg(line):
+            if line == "info":
+                return {"info": {"configuration": {"ppg": {"sps": 100, "avg": 2}}}}
+            return {"configure": {}}
+
+        sb, req = make_sb(resp_low_avg)
+        with self.assertRaises(ValueError) as ctx:
+            sb.configure_ppg(sps=800)  # 800 / 2 = 400 Hz, over the cap
+        self.assertIn("200", str(ctx.exception))
+
+    def test_configure_ppg_avg_alone_reads_sps_from_the_device(self):
+        def resp(line):
+            if line == "info":
+                return {"info": {"configuration": {"ppg": {"sps": 800, "avg": 8}}}}
+            return {"configure": {}}
+
+        sb, req = make_sb(resp)
+        sb.configure_ppg(avg=4)  # 800 (from the device) / 4 = 200 Hz, at the cap
+        self.assertEqual(tok(req.last), tok("configure ppg --avg 4"))
+
+        sb, req = make_sb(resp)
+        with self.assertRaises(ValueError):
+            sb.configure_ppg(avg=2)  # 800 / 2 = 400 Hz
+
+    def test_configure_ppg_no_rate_args_does_not_query_the_device(self):
+        # Nothing about the rate is changing, so there is no reason to ask.
+        sb, req = make_sb({"configure": {}})
+        sb.configure_ppg(sens="high")
+        self.assertNotIn("info", req.calls)
+
+    def test_configure_ppg_skips_the_check_when_the_device_is_silent(self):
+        # A device that does not report its PPG block must not make the call
+        # fail; the cap is the wrapper's own rule, not the CLI's.
+        def resp(line):
+            if line == "info":
+                return {"info": {"configuration": {}}}
+            return {"configure": {}}
+
+        sb, req = make_sb(resp)
+        sb.configure_ppg(sps=800)
+        self.assertIn("--sps 800", req.last)
+
+    def test_configure_ppg_rejects_non_positive_avg(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.configure_ppg(sps=100, avg=0)
+        with self.assertRaises(ValueError):
+            sb.configure_ppg(avg=-1)
+
+
+class TestImuConfiguration(unittest.TestCase):
+    def test_configure_imu_never_sends_gyro_range(self):
+        # 2.0.0 removed --gyro-range; sending it is a hard parse error.
+        sb, req = make_sb()
+        sb.configure_imu(fs=200, accel_range=16)
+        self.assertEqual(tok(req.last), tok("configure imu --fs 200 --acc-range 16"))
+        self.assertNotIn("--gyro-range", req.last)
+
+    def test_configure_imu_accel_range_validated(self):
+        sb, req = make_sb()
+        for bad in (2, 4, 32):
+            with self.assertRaises(ValueError):
+                sb.configure_imu(accel_range=bad)
+
+    def test_configure_imu_fs_only(self):
+        sb, req = make_sb()
+        sb.configure_imu(fs=100)
+        self.assertEqual(tok(req.last), tok("configure imu --fs 100"))
+
+
+class TestDeviceTargeting(unittest.TestCase):
+    """``--all`` / ``--devices`` and the aggregated ``multi`` response."""
+
+    def test_configure_targets_precede_subcommand(self):
+        # `configure ecg --fs 1000 --all` is rejected by the binary; the
+        # targeting flags belong before the subcommand.
+        sb, req = make_sb()
+        sb.configure_ecg(fs=1000, all=True)
+        self.assertEqual(tok(req.last), tok("configure --all ecg --fs 1000"))
+
+    def test_configure_devices_list(self):
+        sb, req = make_sb()
+        sb.configure_emg(fs=1000, devices=["dev1", "dev2"])
         self.assertEqual(
-            tok(req.last),
-            tok("configure imu --fs 200 --acc-range 4 --gyro-range 1000"),
+            tok(req.last), tok("configure --devices dev1,dev2 emg --fs 1000")
         )
 
-    def test_configure_temperature(self):
+    def test_configure_devices_single_string(self):
         sb, req = make_sb()
-        sb.configure_temperature(fs=2)
-        self.assertEqual(tok(req.last), tok("configure temperature --fs 2"))
+        sb.configure_emg(fs=1000, devices="dev1")
+        self.assertEqual(tok(req.last), tok("configure --devices dev1 emg --fs 1000"))
 
-    def test_configure_temperature_float_fs_has_no_trailing_zero(self):
-        # The binary only accepts "0.1", "1", "2", "10" — a float default of
-        # 1.0 must render as "1", not "1.0", or clap rejects it.
+    def test_all_and_devices_are_mutually_exclusive(self):
         sb, req = make_sb()
-        sb.configure_temperature()  # default fs=1.0
-        self.assertEqual(tok(req.last), tok("configure temperature --fs 1"))
-        sb.configure_temperature(fs=0.1)
-        self.assertEqual(tok(req.last), tok("configure temperature --fs 0.1"))
+        with self.assertRaises(ValueError):
+            sb.start(all=True, devices="dev1")
+
+    def test_device_handles_are_validated(self):
+        sb, req = make_sb()
+        # A comma separates handles inside --devices and survives unquoting,
+        # so it is still unusable; a newline ends the REPL line outright.
+        with self.assertRaises(ValueError):
+            sb.start(devices=["ok", "has,comma"])
+        with self.assertRaises(ValueError):
+            sb.start(devices="has\nnewline")
+
+    def test_device_handles_with_spaces_are_quoted(self):
+        sb, req = make_sb()
+        sb.start(devices=["has space", "other"])
+        self.assertEqual(argv(req.last), ["start", "--devices", "has space,other"])
+
+    def test_targets_on_device_commands(self):
+        sb, req = make_sb()
+        sb.set_led(1, True, all=True)
+        self.assertEqual(tok(req.last), tok("led --state on 1 --all"))
+        sb.set_status_updates(True, devices=["a", "b"])
+        self.assertEqual(tok(req.last), tok("status-update on --devices a,b"))
+        sb.set_motor(False, all=True)
+        self.assertEqual(tok(req.last), tok("motor --state off --all"))
+        sb.power_off(all=True)
+        self.assertEqual(tok(req.last), tok("power-off --all"))
+
+    def test_multi_response_is_returned_as_a_list(self):
+        # Before this, `start(all=True)` raised KeyError: the aggregated
+        # response has no "start" key.
+        per_device = [{"id": "a", "connected": True}, {"id": "b", "connected": True}]
+        sb, req = make_sb({"multi": {"responses": per_device}})
+        self.assertEqual(sb.start(all=True), per_device)
+        self.assertEqual(sb.stop(all=True), per_device)
+        self.assertEqual(sb.send_event(all=True), per_device)
+        self.assertEqual(sb.set_led(1, True, all=True), per_device)
+        self.assertEqual(sb.erase_onboard_memory(all=True), per_device)
+        self.assertEqual(sb.configure_ecg(fs=500, all=True), per_device)
+
+    def test_single_device_response_is_unwrapped(self):
+        sb, req = make_sb({"start": {"connected": True}})
+        self.assertIs(sb.start(), True)
+
+
+class TestDeviceCommands(unittest.TestCase):
+    def test_set_motor_intensity(self):
+        sb, req = make_sb({"motor": {"ok": True}})
+        ret = sb.set_motor_intensity(5)
+        self.assertEqual(tok(req.last), tok("motor --intensity 5"))
+        self.assertEqual(ret, {"ok": True})
+
+    def test_set_motor_intensity_validation(self):
+        # The binary accepts 0-10, but the wrapper's contract is 1-10.
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.set_motor_intensity(0)
+        with self.assertRaises(ValueError):
+            sb.set_motor_intensity(11)
+
+    def test_set_motor(self):
+        sb, req = make_sb({"motor": {"connected": True}})
+        sb.set_motor(True)
+        self.assertEqual(tok(req.last), tok("motor --state on"))
+        sb.set_motor(False)
+        self.assertEqual(tok(req.last), tok("motor --state off"))
+
+    def test_set_led(self):
+        sb, req = make_sb({"led": {"connected": True}})
+        ret = sb.set_led(2, True)
+        self.assertEqual(tok(req.last), tok("led --state on 2"))
+        self.assertEqual(ret, {"connected": True})
+
+    def test_set_led_validation(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.set_led(3, True)
+
+    def test_set_status_updates(self):
+        sb, req = make_sb({"status_update": {"connected": True}})
+        ret = sb.set_status_updates(True)
+        self.assertEqual(tok(req.last), tok("status-update on"))
+        self.assertEqual(ret, {"connected": True})
+
+    def test_erase_memory_format_flag(self):
+        sb, req = make_sb({"erase_memory": {"connected": True}})
+        ret = sb.erase_onboard_memory()
+        self.assertEqual(tok(req.last), tok("erase-memory"))
+        self.assertEqual(ret, {"connected": True})
+        sb.erase_onboard_memory(format=True)
+        self.assertEqual(tok(req.last), tok("erase-memory --format"))
+
+    def test_power_off_unwraps(self):
+        sb, req = make_sb({"power_off": {"connected": True}})
+        self.assertEqual(sb.power_off(), {"connected": True})
+        self.assertEqual(tok(req.last), tok("power-off"))
+
+    def test_start_set_default(self):
+        sb, req = make_sb({"start": {"connected": True}})
+        sb.start(set_default=True)
+        self.assertEqual(tok(req.last), tok("start --set-default"))
+
+    def test_start_stop_event(self):
+        sb, req = make_sb(
+            {
+                "start": {"connected": True},
+                "stop": {"connected": True},
+                "event": {"connected": True},
+            }
+        )
+        self.assertTrue(sb.start())
+        self.assertEqual(tok(req.last), tok("start"))
+        self.assertTrue(sb.stop())
+        self.assertEqual(tok(req.last), tok("stop"))
+        self.assertTrue(sb.send_event())
+        self.assertEqual(tok(req.last), tok("event"))
+
+    def test_dfu(self):
+        sb, req = make_sb({"dfu": {"ok": True}})
+        ret = sb.dfu("C:/fw/pkg.zip")
+        self.assertEqual(tok(req.last), tok("dfu C:/fw/pkg.zip"))
+        self.assertEqual(ret, {"ok": True})
+        sb.dfu("pkg.zip", handle="dev1", resume=True)
+        self.assertEqual(tok(req.last), tok("dfu --handle dev1 --resume pkg.zip"))
+
+    def test_dfu_quotes_path_with_spaces(self):
+        sb, req = make_sb({"dfu": {}})
+        sb.dfu("C:/My Files/pkg.zip", handle="my band")
+        self.assertEqual(
+            argv(req.last),
+            ["dfu", "--handle", "my band", "C:/My Files/pkg.zip"],
+        )
 
     def test_toggle_configs(self):
         sb, req = make_sb()
@@ -190,44 +489,7 @@ class TestConfigureCommands(unittest.TestCase):
         self.assertEqual(tok(req.last), tok("configure ble-power low"))
 
 
-class TestDeviceCommands(unittest.TestCase):
-    def test_set_motor_intensity(self):
-        sb, req = make_sb({"motor": {"ok": True}})
-        ret = sb.set_motor_intensity(5)
-        self.assertEqual(tok(req.last), tok("motor --intensity 5"))
-        self.assertEqual(ret, {"ok": True})
-
-    def test_set_motor_intensity_validation(self):
-        sb, req = make_sb()
-        with self.assertRaises(ValueError):
-            sb.set_motor_intensity(0)
-        with self.assertRaises(ValueError):
-            sb.set_motor_intensity(11)
-
-    def test_set_motor(self):
-        sb, req = make_sb()
-        sb.set_motor(True)
-        self.assertEqual(tok(req.last), tok("motor --state on"))
-        sb.set_motor(False)
-        self.assertEqual(tok(req.last), tok("motor --state off"))
-
-    def test_set_led(self):
-        sb, req = make_sb({"led": {"connected": True}})
-        ret = sb.set_led(2, True)
-        self.assertEqual(tok(req.last), tok("led --state on 2"))
-        self.assertEqual(ret, {"connected": True})
-
-    def test_set_led_validation(self):
-        sb, req = make_sb()
-        with self.assertRaises(ValueError):
-            sb.set_led(3, True)
-
-    def test_set_status_updates(self):
-        sb, req = make_sb({"status_update": {"connected": True}})
-        ret = sb.set_status_updates(True)
-        self.assertEqual(tok(req.last), tok("status-update on"))
-        self.assertEqual(ret, {"connected": True})
-
+class TestSessionCommands(unittest.TestCase):
     def test_info(self):
         sb, req = make_sb({"info": {"id": "DEV1", "connected": True}})
         self.assertEqual(sb.info(), {"id": "DEV1", "connected": True})
@@ -236,6 +498,51 @@ class TestDeviceCommands(unittest.TestCase):
     def test_get_active_device(self):
         sb, req = make_sb({"info": {"id": "DEV1"}})
         self.assertEqual(sb.get_active_device(), "DEV1")
+
+    def test_info_accessors(self):
+        # sifibridge nests all of this inside `configuration`; reading it from
+        # the top level of info() silently yields nothing.
+        sensors = {"ecg": True, "emg": True, "imu": True}
+        configuration = {
+            "sensors": sensors,
+            "device_state": "idle",
+            "battery_%": 85,
+            "ecg": {"enabled": True, "fs": 500.0},
+            "emg": {"enabled": False, "fs": 2000.0},
+            "imu": {"enabled": True, "fs": 100.0},
+        }
+        sb, req = make_sb({"info": {"id": "DEV1", "configuration": configuration}})
+        self.assertEqual(sb.get_configuration(), configuration)
+        self.assertEqual(sb.get_sensors(), sensors)
+        self.assertEqual(sb.get_device_state(), "idle")
+        self.assertEqual(sb.get_battery(), 85)
+
+    def test_get_sensor_states_reports_enabled_flags(self):
+        # get_sensors() is the hardware inventory; get_sensor_states() is what
+        # configure_sensors() actually manipulates. They differ.
+        sb, req = make_sb(
+            {
+                "info": {
+                    "configuration": {
+                        "sensors": {"ecg": True, "emg": True, "ppg": True},
+                        "ecg": {"enabled": True},
+                        "emg": {"enabled": False},
+                        "ppg": {"enabled": False},
+                    }
+                }
+            }
+        )
+        self.assertEqual(
+            sb.get_sensor_states(), {"ecg": True, "emg": False, "ppg": False}
+        )
+
+    def test_info_accessors_tolerate_missing_fields(self):
+        sb, req = make_sb({"info": {"id": "DEV1"}})
+        self.assertEqual(sb.get_configuration(), {})
+        self.assertEqual(sb.get_sensors(), {})
+        self.assertEqual(sb.get_sensor_states(), {})
+        self.assertIsNone(sb.get_device_state())
+        self.assertIsNone(sb.get_battery())
 
     def test_select_device(self):
         def resp(line):
@@ -246,10 +553,22 @@ class TestDeviceCommands(unittest.TestCase):
         self.assertEqual(req.calls[0], "select myname")
         self.assertEqual(req.calls[1], "info")
 
-    def test_select_device_rejects_spaces(self):
+    def test_select_device_quotes_spaces(self):
+        sb, req = make_sb()
+        sb.select_device("has space")
+        self.assertEqual(argv(req.calls[0]), ["select", "has space"])
+
+    def test_select_device_quotes_command_separator(self):
+        # ';' separates commands in the REPL, so an unquoted name carrying one
+        # would run whatever follows it as a second command.
+        sb, req = make_sb()
+        sb.select_device("a;disconnect")
+        self.assertEqual(argv(req.calls[0]), ["select", "a;disconnect"])
+
+    def test_select_device_rejects_newline(self):
         sb, req = make_sb()
         with self.assertRaises(ValueError):
-            sb.select_device("has space")
+            sb.select_device("two\nlines")
 
     def test_rename_device(self):
         sb, req = make_sb({"rename": {"name": "x"}})
@@ -258,14 +577,28 @@ class TestDeviceCommands(unittest.TestCase):
         sb.rename_device(None)
         self.assertEqual(tok(req.last), tok("rename --reset"))
 
-    def test_rename_device_rejects_spaces(self):
-        sb, req = make_sb()
+    def test_rename_device_quotes_spaces(self):
+        sb, req = make_sb({"rename": {}})
+        sb.rename_device("my band")
+        self.assertEqual(argv(req.last), ["rename", "my band"])
+
+    def test_rename_device_enforces_14_byte_limit(self):
+        sb, req = make_sb({"rename": {}})
+        sb.rename_device("a" * 14)
         with self.assertRaises(ValueError):
-            sb.rename_device("bad name")
+            sb.rename_device("a" * 15)
+        # The firmware limit is in bytes, not characters.
+        with self.assertRaises(ValueError):
+            sb.rename_device("é" * 8)
+        # Quoting does not buy room: the limit applies to the name itself.
+        sb.rename_device("a b c d e f g")
+        with self.assertRaises(ValueError):
+            sb.rename_device("a b c d e f g h")
 
     def test_list_devices(self):
-        sb, req = make_sb({"list": {"devices": ["a", "b"]}})
-        self.assertEqual(sb.list_devices(ListSources.DEVICES), ["a", "b"])
+        devices = [{"id": "C2:EC:EF:34:0E:00", "name": "my_biopoint"}]
+        sb, req = make_sb({"list": {"devices": devices}})
+        self.assertEqual(sb.list_devices(ListSources.DEVICES), devices)
         self.assertEqual(req.last, "list devices")
         sb2, req2 = make_sb({"list": {"devices": []}})
         sb2.list_devices("ble")
@@ -282,6 +615,11 @@ class TestDeviceCommands(unittest.TestCase):
         self.assertFalse(sb.connect())
         self.assertEqual(req.calls[0].strip(), "connect")
 
+    def test_connect_quotes_handle_with_spaces(self):
+        sb, req = make_sb({"connect": {"connected": True}})
+        sb.connect("My BioPoint")
+        self.assertEqual(argv(req.last), ["connect", "My BioPoint"])
+
     def test_connect_timeout_returns_false(self):
         def resp(line):
             raise SifiBridgeTimeout("no response")
@@ -294,41 +632,32 @@ class TestDeviceCommands(unittest.TestCase):
         self.assertFalse(sb.disconnect())
         self.assertEqual(req.last, "disconnect")
 
-    def test_start_stop_event(self):
-        sb, req = make_sb(
-            {
-                "start": {"connected": True},
-                "stop": {"connected": True},
-                "event": {"connected": True},
-            }
-        )
-        self.assertTrue(sb.start())
-        self.assertEqual(req.last.strip(), "start")
-        sb.start(all=True)
-        self.assertEqual(tok(req.last), tok("start --all"))
-        self.assertTrue(sb.stop())
-        self.assertEqual(req.last.strip(), "stop")
-        sb.stop(all=True)
-        self.assertEqual(tok(req.last), tok("stop --all"))
-        self.assertTrue(sb.send_event())
-        self.assertEqual(req.last.strip(), "event")
-        sb.send_event(all=True)
-        self.assertEqual(tok(req.last), tok("event --all"))
-
-    def test_erase_and_power_off(self):
-        sb, req = make_sb()
-        sb.erase_onboard_memory()
-        self.assertEqual(req.last, "erase-memory")
-        sb.power_off()
-        self.assertEqual(req.last, "power-off")
-
     def test_error_response_propagates(self):
         def resp(line):
             raise SifiBridgeError("boom")
 
         sb, req = make_sb(resp)
         with self.assertRaises(SifiBridgeError):
-            sb.configure_ecg()
+            sb.configure_ecg(fs=500)
+
+
+class TestResponseRouting(unittest.TestCase):
+    """``_request`` matches a response to its command by top-level key."""
+
+    def test_expected_key_derivation(self):
+        cases = {
+            "info": "info",
+            "status-update on": "status_update",
+            "power-off": "power_off",
+            "erase-memory --format": "erase_memory",
+            "download-memory": "download_memory",
+            "buffer list": "buffer_list",
+            "buffer export --dir .": "buffer_export",
+            "configure --all ecg --fs 1000": "configure",
+            "": None,
+        }
+        for line, expected in cases.items():
+            self.assertEqual(SifiBridge._expected_key(line), expected, line)
 
 
 class TestBufferCommands(unittest.TestCase):
@@ -345,9 +674,21 @@ class TestBufferCommands(unittest.TestCase):
         sb, req = make_sb({"buffer_export": {}})
         sb.buffer_export()
         self.assertNotIn("--handle", req.last)
+        self.assertEqual(tok(req.last), tok("buffer export --dir . --format csv"))
+
+    def test_buffer_export_quotes_output_dir_with_spaces(self):
+        # 2.0.1 parses quotes, so a path with spaces goes through intact.
+        sb, req = make_sb({"buffer_export": {}})
+        sb.buffer_export(output_dir="C:/Users/me/My Data")
         self.assertEqual(
-            tok(req.last), tok("buffer export --dir . --format csv")
+            argv(req.last),
+            ["buffer", "export", "--dir", "C:/Users/me/My Data", "--format", "csv"],
         )
+
+    def test_buffer_export_rejects_output_dir_with_newline(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.buffer_export(output_dir="two\nlines")
 
     def test_buffer_list(self):
         sb, req = make_sb({"buffer_list": {"acquisitions": [{"id": 1}]}})
@@ -359,9 +700,7 @@ class TestBufferCommands(unittest.TestCase):
     def test_buffer_info(self):
         sb, req = make_sb({"buffer_info": {"acquisition": {}, "device_config": None}})
         sb.buffer_info(device="DEV", acquisition_id=2)
-        self.assertEqual(
-            tok(req.last), tok("buffer info --handle DEV --id 2")
-        )
+        self.assertEqual(tok(req.last), tok("buffer info --handle DEV --id 2"))
 
     def test_buffer_pull_single_sensor(self):
         sb, req = make_sb({"buffer_pull": {"sensors": [{"sensor": "ecg"}]}})
@@ -437,6 +776,173 @@ class TestBufferCommands(unittest.TestCase):
         sb.download_memory_serial("COM3", "/tmp/o")
         self.assertEqual(req.calls[0], "download-memory --serial COM3")
         self.assertIn("buffer export", req.calls[-1])
+
+
+class TestPpgFsHelper(unittest.TestCase):
+    """`configure_ppg_fs` solves fs = sps / avg over the hardware's choices."""
+
+    def test_prefers_the_most_averaging(self):
+        # 100 Hz is reachable as 100/1, 200/2, 400/4 and 800/8; the last gives
+        # eight raw samples per delivered one, so it wins by default.
+        sb, req = make_sb()
+        sb.configure_ppg_fs(100)
+        self.assertEqual(tok(req.last), tok("configure ppg --sps 800 --avg 8"))
+
+    def test_explicit_avg_is_honoured(self):
+        sb, req = make_sb()
+        sb.configure_ppg_fs(100, avg=1)
+        self.assertEqual(tok(req.last), tok("configure ppg --sps 100 --avg 1"))
+
+    def test_passes_through_the_other_settings(self):
+        sb, req = make_sb()
+        sb.configure_ppg_fs(50, ir=5, sens="high")
+        self.assertIn("--sps 800", req.last)
+        self.assertIn("--avg 16", req.last)
+        self.assertIn("--led-ir 5", req.last)
+        self.assertIn("--sens high", req.last)
+
+    def test_every_reachable_rate_solves(self):
+        sb, req = make_sb()
+        for fs in SifiBridge._reachable_ppg_rates():
+            with self.subTest(fs=fs):
+                sps, avg = SifiBridge._solve_ppg_rate(fs, None)
+                self.assertEqual(sps / avg, fs)
+                self.assertIn(sps, SifiBridge._PPG_SPS_CHOICES)
+                self.assertIn(avg, SifiBridge._PPG_AVG_CHOICES)
+
+    def test_unreachable_rate_lists_the_alternatives(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError) as ctx:
+            sb.configure_ppg_fs(7)
+        self.assertIn("25", str(ctx.exception))
+
+    def test_rate_above_the_cap_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError) as ctx:
+            sb.configure_ppg_fs(400)
+        self.assertIn("200", str(ctx.exception))
+
+    def test_impossible_avg_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.configure_ppg_fs(100, avg=3)  # would need sps=300
+
+    def test_non_positive_rate_rejected(self):
+        sb, req = make_sb()
+        with self.assertRaises(ValueError):
+            sb.configure_ppg_fs(0)
+
+
+class TestDataPacket(unittest.TestCase):
+    """The opt-in typed view over a packet dict."""
+
+    PACKET = {
+        "device": "BioPoint",
+        "id": "BP_EF05",
+        "name": "my_biopoint",
+        "mac": "FA:31:9F:7E:6A:A9",
+        "packet_type": "imu",
+        "status": "ok",
+        "received_at": 1789285349.65,
+        "sample_rate": 99.8,
+        "samples_lost": 2,
+        "timestamps": [0.0, 0.01, 0.02],
+        "data": {
+            "qw": [0.54, 0.55, 0.56],
+            "ax": [0.1, 0.2, 0.3],
+        },
+    }
+
+    def test_fields(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertEqual(packet.packet_type, "imu")
+        self.assertEqual(packet.device, "BioPoint")
+        self.assertEqual(packet.id, "BP_EF05")
+        self.assertEqual(packet.name, "my_biopoint")
+        self.assertEqual(packet.sample_rate, 99.8)
+        self.assertEqual(packet.samples_lost, 2)
+        self.assertEqual(packet.timestamps, (0.0, 0.01, 0.02))
+        self.assertTrue(packet.is_ok)
+        self.assertTrue(packet.is_type(PacketType.IMU))
+        self.assertTrue(packet.is_type("imu"))
+        self.assertFalse(packet.is_type(PacketType.ECG))
+
+    def test_channels(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertEqual(packet.channels, ("qw", "ax"))
+        self.assertEqual(packet.channel(BioChannel.QW), [0.54, 0.55, 0.56])
+        self.assertEqual(packet.channel("ax"), [0.1, 0.2, 0.3])
+        self.assertIsNone(packet.get(BioChannel.ECG))
+        self.assertEqual(packet.get(BioChannel.ECG, []), [])
+
+    def test_missing_channel_names_what_is_there(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        with self.assertRaises(KeyError) as ctx:
+            packet.channel(BioChannel.ECG)
+        self.assertIn("ax", str(ctx.exception))
+
+    def test_as_array(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertEqual(packet.as_array().shape, (2, 3))
+        self.assertEqual(packet.as_array([BioChannel.AX]).shape, (1, 3))
+
+    def test_absolute_timestamps(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        absolute = packet.absolute_timestamps(1000.0)
+        self.assertEqual([round(t, 3) for t in absolute], [1000.0, 1000.01, 1000.02])
+
+    def test_absent_fields_are_none_not_zero(self):
+        # sample_rate takes two samples to measure and is omitted until then;
+        # reporting it as 0.0 would invite a division by zero.
+        packet = DataPacket.from_dict(
+            {"packet_type": "ecg", "status": "ok", "data": {"ecg": [1.0]}}
+        )
+        self.assertIsNone(packet.sample_rate)
+        self.assertIsNone(packet.start_time)
+        self.assertEqual(packet.samples_lost, 0)
+        self.assertEqual(packet.timestamps, ())
+
+    def test_raw_is_preserved(self):
+        packet = DataPacket.from_dict(self.PACKET)
+        self.assertIs(packet.raw, self.PACKET)
+
+    def test_empty_packet_rejected(self):
+        # The getters return {} on timeout, which is not a packet.
+        with self.assertRaises(ValueError):
+            DataPacket.from_dict({})
+
+    def test_unknown_packet_type_does_not_raise(self):
+        # The schema allows values outside the known set, so a newer bridge
+        # must not break an older wrapper.
+        packet = DataPacket.from_dict(
+            {"packet_type": "something_new", "status": "ok", "data": {}}
+        )
+        self.assertEqual(packet.packet_type, "something_new")
+        self.assertFalse(packet.is_type(PacketType.ECG))
+
+
+class TestUtils(unittest.TestCase):
+    def test_get_start_time(self):
+        packet = {"packet_type": "start_time", "start_time": 1789285349.0}
+        self.assertEqual(utils.get_start_time(packet), 1789285349.0)
+
+    def test_get_start_time_missing(self):
+        # A device whose clock came up wrong reports "invalid_datetime" and
+        # omits start_time; the acquisition still records.
+        packet = {"packet_type": "start_time", "status": "invalid_datetime"}
+        self.assertIsNone(utils.get_start_time(packet))
+
+    def test_absolute_timestamps(self):
+        # Sample timestamps are relative to the acquisition start, in seconds.
+        packet = {"timestamps": [0.0, 0.002, 0.004]}
+        result = utils.absolute_timestamps(packet, 1789285349.0)
+        self.assertEqual(
+            [round(t, 3) for t in result],
+            [1789285349.0, 1789285349.002, 1789285349.004],
+        )
+
+    def test_absolute_timestamps_without_timestamps(self):
+        self.assertEqual(len(utils.absolute_timestamps({}, 1789285349.0)), 0)
 
 
 if __name__ == "__main__":

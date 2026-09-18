@@ -111,6 +111,17 @@ pytest tests/
    ```bash
    uv run python -c "import sifi_bridge_py; print(sifi_bridge_py.__file__)"
    ```
+   Then run the suite. Tier 1 needs nothing; Tier 2 needs `SIFIBRIDGE_EXE` (or a
+   published `sifibridge-bin`); Tier 3 needs a powered-on device:
+   ```bash
+   uv run python -m unittest tests.test_unit -v
+   uv run python -m unittest tests.test_integration -v
+   SIFI_HW=BioPoint uv run python -m unittest tests.test_hardware -v
+   ```
+   Tier 2 sends every command line the wrapper can generate to a real
+   `sifibridge` and asserts it parses. If you add a wrapper method, add it to
+   `COMMAND_MATRIX` in `tests/test_integration.py` — a guard test fails if you
+   forget.
 4. **Update version** when ready to release:
    - Edit the `version` field in `pyproject.toml`
    - Run `uv sync` to update the lock file
@@ -145,13 +156,13 @@ When a new CLI binary is released on [sifilabs/sifi-bridge-pub](https://github.c
 2. Build platform wheels:
    ```bash
    cd sifibridge-bin
-   python scripts/build_wheels.py <release-tag>  # e.g. 2.0.0-b9
+   python scripts/build_wheels.py <release-tag>  # e.g. 2.0.0
    ```
 3. Publish to PyPI:
    ```bash
    uv publish dist/*
    ```
-   Or push a `bin-<version>` tag (e.g. `bin-2.0.0-b9`) to trigger the `release-sifibridge-bin` CI workflow.
+   Or push a `bin-<version>` tag (e.g. `bin-2.0.0`) to trigger the `release-sifibridge-bin` CI workflow.
 
 No changes needed to `sifi-bridge-py` unless you want to bump the minimum `sifibridge-bin` version in its dependencies.
 
@@ -182,10 +193,10 @@ Build the wheels, then install the one matching your platform directly:
 
 ```bash
 cd sifibridge-bin
-python scripts/build_wheels.py 2.0.0-b8
+python scripts/build_wheels.py 2.0.0
 
 # Install the wheel for your platform
-uv pip install dist/sifibridge_bin-2.0.0b8-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl --reinstall
+uv pip install dist/sifibridge_bin-2.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl --reinstall
 ```
 
 Or use TestPyPI:
